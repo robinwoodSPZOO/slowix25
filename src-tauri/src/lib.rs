@@ -1,0 +1,199 @@
+//! Aplikacja okienkowa ROBINWOOD (Tauri 2).
+//!
+//! Odpowiada za: okna, zasobnik, autostart, powiadomienia, konfigurację stanowiska
+//! i – w trybie „serwer” – uruchomienie API z crate'a `robinwood-serwer` w tym samym procesie.
+//! Dane biznesowe NIE idą przez komendy Tauri: interfejs zawsze rozmawia z API HTTP,
+//! tak samo na serwerze (127.0.0.1) jak na stanowisku-kliencie (adres w sieci).
+
+mod konfiguracja;
+mod powiadomienia;
+mod zasobnik;
+
+use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Mutex;
+use std::time::Duration;
+
+use serde::Serialize;
+use tauri::{AppHandle, Manager, State, WindowEvent};
+use tauri_plugin_autostart::MacosLauncher;
+
+use konfiguracja::{Konfiguracja, Tryb};
+use robinwood_serwer::mdns::ZnalezionySerwer;
+use robinwood_serwer::{UruchomionySerwer, UstawieniaSerwera};
+
+/// Argument dodawany przy autostarcie: uruchom bez pokazywania głównego okna.
+pub const ARG_ZMINIMALIZOWANY: &str = "--zminimalizowany";
+
+#[derive(Default)]
+struct StanAplikacji {
+    konfiguracja: Mutex<Konfiguracja>,
+    serwer: Mutex<Option<UruchomionySerwer>>,
+    blad_serwera: Mutex<Option<String>>,
+}
+
+/// To, czego interfejs potrzebuje, żeby połączyć się z API.
+#[derive(Serialize)]
+struct Polaczenie {
+    konfiguracja: Konfiguracja,
+    /// Adres bazowy API, z którym ma rozmawiać interfejs (None = nieskonfigurowane).
+    adres_api: Option<String>,
+    klucz_api: Option<String>,
+    /// Czy lokalny serwer działa (tryb serwer).
+    serwer_dziala: bool,
+    blad_serwera: Option<String>,
+    folder_danych: Option<String>,
+}
+
+#[tauri::command]
+fn pobierz_polaczenie(app: AppHandle, stan: State<'_, StanAplikacji>) -> Polaczenie {
+    let konf = stan.konfiguracja.lock().unwrap().clone();
+    let serwer_dziala = stan.serwer.lock().unwrap().is_some();
+    let blad_serwera = stan.blad_serwera.lock().unwrap().clone();
+    let adres_api = match konf.tryb {
+        Tryb::Serwer => Some(format!("http://127.0.0.1:{}", konf.port)),
+        Tryb::Klient => konf.adres_serwera.clone(),
+        Tryb::Nieskonfigurowany => None,
+    };
+    let folder_danych = match konf.tryb {
+        Tryb::Serwer => konfiguracja::folder_danych(&app, &konf)
+            .ok()
+            .map(|p| p.display().to_string()),
+        _ => None,
+    };
+    Polaczenie {
+        klucz_api: konf.klucz_api.clone(),
+        konfiguracja: konf,
+        adres_api,
+        serwer_dziala,
+        blad_serwera,
+        folder_danych,
+    }
+}
+
+/// Zapisuje konfigurację i restartuje aplikację, żeby zmiana trybu weszła w życie.
+#[tauri::command]
+fn zapisz_konfiguracje(app: AppHandle, mut konfiguracja: Konfiguracja) -> Result<(), String> {
+    if konfiguracja.tryb == Tryb::Serwer
+        && konfiguracja.klucz_api.as_deref().unwrap_or("").is_empty()
+    {
+        konfiguracja.klucz_api = Some(robinwood_serwer::nowy_klucz_api());
+    }
+    if let Some(adres) = konfiguracja.adres_serwera.as_mut() {
+        *adres = adres.trim().trim_end_matches('/').to_string();
+        if !adres.is_empty() && !adres.starts_with("http") {
+            *adres = format!("http://{adres}");
+        }
+    }
+    konfiguracja::zapisz(&app, &konfiguracja).map_err(|e| e.to_string())?;
+    app.restart();
+}
+
+#[tauri::command]
+async fn wyszukaj_serwery() -> Result<Vec<ZnalezionySerwer>, String> {
+    tokio::task::spawn_blocking(|| robinwood_serwer::mdns::wyszukaj(Duration::from_secs(3)))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn powiadomienie_testowe(app: AppHandle) -> Result<(), String> {
+    powiadomienia::testowe(&app).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn przelacz_widzet(app: AppHandle) {
+    zasobnik::przelacz_okno(&app, zasobnik::OKNO_WIDZET);
+}
+
+#[tauri::command]
+fn otworz_glowne_okno(app: AppHandle) {
+    zasobnik::pokaz_okno(&app, zasobnik::OKNO_GLOWNE);
+}
+
+fn uruchom_serwer_jesli_trzeba(app: &AppHandle) {
+    let stan = app.state::<StanAplikacji>();
+    let konf = stan.konfiguracja.lock().unwrap().clone();
+    if konf.tryb != Tryb::Serwer {
+        return;
+    }
+    let wynik = (|| -> anyhow::Result<UruchomionySerwer> {
+        let folder = konfiguracja::folder_danych(app, &konf)?;
+        let ustawienia = UstawieniaSerwera {
+            sciezka_bazy: folder.join("robinwood.db"),
+            adres: SocketAddr::from((Ipv4Addr::UNSPECIFIED, konf.port)),
+            klucz_api: konf
+                .klucz_api
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("brak klucza API w konfiguracji"))?,
+            nazwa: konf.nazwa_stanowiska.clone(),
+            oglaszaj_mdns: true,
+        };
+        tauri::async_runtime::block_on(robinwood_serwer::uruchom(ustawienia))
+    })();
+    match wynik {
+        Ok(s) => *stan.serwer.lock().unwrap() = Some(s),
+        Err(e) => {
+            tracing::error!("Nie udało się uruchomić serwera: {e}");
+            *stan.blad_serwera.lock().unwrap() = Some(e.to_string());
+        }
+    }
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
+        .try_init();
+
+    tauri::Builder::default()
+        // Musi być pierwsza: drugie uruchomienie tylko pokazuje istniejące okno.
+        .plugin(tauri_plugin_single_instance::init(
+            |app, _argumenty, _katalog| {
+                zasobnik::pokaz_okno(app, zasobnik::OKNO_GLOWNE);
+            },
+        ))
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            Some(vec![ARG_ZMINIMALIZOWANY]),
+        ))
+        .manage(StanAplikacji::default())
+        .invoke_handler(tauri::generate_handler![
+            pobierz_polaczenie,
+            zapisz_konfiguracje,
+            wyszukaj_serwery,
+            powiadomienie_testowe,
+            przelacz_widzet,
+            otworz_glowne_okno,
+        ])
+        .setup(|app| {
+            let handle = app.handle().clone();
+            let konf = konfiguracja::wczytaj(&handle).unwrap_or_else(|e| {
+                tracing::warn!("Nie udało się wczytać konfiguracji, używam domyślnej: {e}");
+                Konfiguracja::default()
+            });
+            *app.state::<StanAplikacji>().konfiguracja.lock().unwrap() = konf;
+            uruchom_serwer_jesli_trzeba(&handle);
+            zasobnik::utworz(&handle)?;
+
+            let zminimalizowany = std::env::args().any(|a| a == ARG_ZMINIMALIZOWANY);
+            if zminimalizowany {
+                zasobnik::pokaz_okno(&handle, zasobnik::OKNO_WIDZET);
+            } else {
+                zasobnik::pokaz_okno(&handle, zasobnik::OKNO_GLOWNE);
+            }
+            Ok(())
+        })
+        .on_window_event(|okno, zdarzenie| {
+            // Zamknięcie okna chowa je do zasobnika; program kończy „Zakończ” w menu zasobnika.
+            if let WindowEvent::CloseRequested { api, .. } = zdarzenie {
+                let _ = okno.hide();
+                api.prevent_close();
+            }
+        })
+        .run(tauri::generate_context!())
+        .expect("błąd podczas uruchamiania aplikacji ROBINWOOD");
+}
