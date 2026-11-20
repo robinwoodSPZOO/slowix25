@@ -1,0 +1,29 @@
+/* Szkielet bez dopracowanego wyglądu – docelowy styl przyjdzie z projektu w Figmie. */
+:root {
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  color: #1f1f1f;
+  background: #fafafa;
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+.uklad { display: flex; min-height: 100vh; }
+.menu { width: 200px; background: #2b2b2b; color: #eee; display: flex; flex-direction: column; padding: 12px 0; }
+.menu .logo { font-weight: 700; padding: 8px 16px 16px; letter-spacing: 0.08em; }
+.menu a { color: #ddd; text-decoration: none; padding: 8px 16px; }
+.menu a.active { background: #444; color: #fff; }
+.menu .stan { margin-top: auto; padding: 12px 16px; font-size: 12px; color: #aaa; }
+.tresc { flex: 1; padding: 20px 28px; overflow: auto; }
+.komunikat { max-width: 560px; }
+.blad { color: #b00020; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e0e0e0; }
+form.formularz { display: grid; grid-template-columns: 180px 1fr; gap: 8px 12px; max-width: 640px; }
+form.formularz label { align-self: center; }
+form.formularz .przyciski { grid-column: 2; display: flex; gap: 8px; }
+input, select, textarea { font: inherit; padding: 4px 6px; }
+button { font: inherit; padding: 4px 12px; cursor: pointer; }
+.pasek { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+.legenda { display: flex; flex-wrap: wrap; gap: 12px; }
+.legenda span::before { content: ""; display: inline-block; width: 12px; height: 12px; margin-right: 6px; background: var(--kolor); vertical-align: -1px; }
+.widzet { padding: 12px; background: #fff; height: 100vh; border: 1px solid #ccc; }
