@@ -17,6 +17,7 @@ pub mod kalendarz_ui;
 pub mod klienci;
 pub mod limity;
 pub mod mdns;
+pub mod nazwy;
 pub mod oferty;
 pub mod pliki;
 pub mod roznice;

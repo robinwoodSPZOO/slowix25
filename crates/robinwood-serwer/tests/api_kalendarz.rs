@@ -576,7 +576,13 @@ async fn kolizje_zadania_reczne_i_bledy() {
         .wyslij("POST", &format!("/api/v1/zlecenia/{z3}/harmonogram"), None)
         .await;
     assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
-    assert!(v["blad"].as_str().unwrap().contains("montaz_od"), "{v}");
+    assert!(
+        v["blad"]
+            .as_str()
+            .unwrap()
+            .contains("termin rozpoczęcia montażu"),
+        "{v}"
+    );
     let (st, _) = app
         .wyslij(
             "POST",

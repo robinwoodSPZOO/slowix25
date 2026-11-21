@@ -403,21 +403,29 @@ pub async fn zapisz_dostawce(
     id: Option<i64>,
     d: DaneDostawcy,
 ) -> Wynik<Dostawca> {
-    let nazwa = d.nazwa.trim().to_string();
+    let nazwa = crate::nazwy::oczysc(&d.nazwa);
     if nazwa.is_empty() {
         return Err(BladApi::NieprawidloweDane(
             "nazwa dostawcy jest wymagana".into(),
         ));
     }
-    let powtorzona: Option<i64> =
-        sqlx::query_scalar("SELECT id FROM dostawcy WHERE nazwa = ?1 AND id IS NOT ?2")
-            .bind(&nazwa)
-            .bind(id)
-            .fetch_optional(pula)
-            .await?;
+    if nazwa.chars().count() > crate::nazwy::MAKS_NAZWY {
+        return Err(BladApi::NieprawidloweDane(format!(
+            "nazwa dostawcy: najwyżej {} znaków",
+            crate::nazwy::MAKS_NAZWY
+        )));
+    }
+    for (pole, t) in [("e-mail", &d.email), ("telefon", &d.telefon)] {
+        crate::limity::tekst(pole, t.as_deref(), crate::nazwy::MAKS_NAZWY)?;
+    }
+    crate::limity::tekst("uwagi", d.uwagi.as_deref(), 2000)?;
+    let mut c = pula.acquire().await?;
+    let powtorzona =
+        crate::nazwy::znajdz(&mut c, crate::nazwy::Tabela::Dostawcy, &nazwa, id).await?;
+    drop(c);
     if powtorzona.is_some() {
         return Err(BladApi::NieprawidloweDane(format!(
-            "dostawca „{nazwa}” już istnieje"
+            "dostawca „{nazwa}” już istnieje (wielkość liter i odstępy nie mają znaczenia)"
         )));
     }
     let id = match id {
@@ -1257,22 +1265,23 @@ pub async fn wejscie(
     id: i64,
 ) -> Wynik<(ZlecenieWejscie, Vec<MaterialWejscie>)> {
     let z = zlecenie(conn, id).await?;
+    let nazwa = z.nazwa.clone();
     let brak = |co: &str| {
         BladApi::NieprawidloweDane(format!(
-            "zlecenie {id}: uzupełnij {co}, aby policzyć harmonogram"
+            "zlecenie „{nazwa}”: uzupełnij {co}, aby policzyć harmonogram"
         ))
     };
     let montaz_od = data(
         z.montaz_od
             .as_deref()
-            .ok_or_else(|| brak("termin rozpoczęcia montażu (montaz_od)"))?,
+            .ok_or_else(|| brak("termin rozpoczęcia montażu"))?,
     )?;
     let czas_montazu = z
         .czas_montazu_dni
-        .ok_or_else(|| brak("czas montażu (czas_montazu_dni)"))?;
+        .ok_or_else(|| brak("czas montażu (w dniach)"))?;
     let czas_warsztatu = z
         .czas_warsztat_dni
-        .ok_or_else(|| brak("czas warsztatu (czas_warsztat_dni)"))?;
+        .ok_or_else(|| brak("czas składania na warsztacie (w dniach)"))?;
 
     let (data_umowy, dni_info) = match z.umowa_id {
         Some(u) => {
@@ -2198,7 +2207,9 @@ type DaneZadaniaDoWykonania = (Option<i64>, Option<i64>, String, Option<String>)
 fn nie_z_przyszlosci(co: &str, d: Option<NaiveDate>, dzis: NaiveDate) -> Wynik<()> {
     match d {
         Some(d) if d > dzis => Err(BladApi::NieprawidloweDane(format!(
-            "{co} {d} jest z przyszłości (dziś {dzis})"
+            "{co} {} jest z przyszłości (dziś {})",
+            crate::kalendarz::data_pl(d),
+            crate::kalendarz::data_pl(dzis)
         ))),
         _ => Ok(()),
     }

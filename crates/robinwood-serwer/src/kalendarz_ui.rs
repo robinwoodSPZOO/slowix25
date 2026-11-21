@@ -19,7 +19,10 @@ use sqlx::SqliteConnection;
 
 use crate::api::StanApi;
 use crate::bledy::{BladApi, Wynik};
+use std::collections::HashMap;
+
 use crate::kalendarz;
+use crate::nazwy;
 use crate::terminarz::{self as t, WynikPrzeliczeniaWszystkich};
 use crate::wejscie::{Cialo, Parametry};
 use crate::zdarzenia::{Operacja, Zdarzenie};
@@ -35,6 +38,7 @@ pub fn trasy() -> Router<StanApi> {
         .route("/import/kategorie-materialow", post(importuj))
         .route("/kalendarz/dni-wolne/zakres", post(dodaj_zakres))
         .route("/kalendarz/dni-wolne/usun-zakres", post(usun_zakres))
+        .route("/kalendarz/dni-wolne/kolizje", post(podglad_kolizji))
         .route("/kalendarz/wiersze-specyfikacji", get(wiersze_specyfikacji))
 }
 
@@ -97,6 +101,11 @@ pub struct WierszImportu {
 #[serde(deny_unknown_fields)]
 pub struct DaneImportu {
     pub wiersze: Vec<WierszImportu>,
+    /// `false` (domyślnie) – import tylko UZUPEŁNIA: dodaje brakujące kategorie, dostawców i czasy
+    /// dostaw, wpisuje widełki tylko tam, gdzie ich nie ustawiono (0–0); ustawionych nie zmienia.
+    /// `true` – nadpisuje także ustawione widełki kategorii i par kategoria + dostawca.
+    #[serde(default)]
+    pub nadpisz: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -105,12 +114,20 @@ pub struct PominietyWiersz {
     pub powod: String,
 }
 
+/// Raport importu. Wszystkie liczniki liczą tylko **faktyczne** zmiany w bazie.
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct RaportImportuKategorii {
     pub kategorie_dodane: usize,
+    /// Istniejące kategorie, w których coś się zmieniło (opis, domyślny dostawca, widełki).
     pub kategorie_zaktualizowane: usize,
     pub dostawcy_dodani: usize,
+    /// Wpisane albo zmienione widełki (kategorii lub pary kategoria + dostawca).
     pub czasy_dostaw_ustawione: usize,
+    /// Wiersze bez żadnej zmiany (wszystko już tak było).
+    pub bez_zmian: usize,
+    /// Wiersze, w których plik podaje inne widełki niż ustawione – pozostawiono ustawione
+    /// (tryb uzupełniania); `powod` mówi, co jest w bazie, a co w pliku.
+    pub pozostawione: Vec<PominietyWiersz>,
     /// Wiersze bez czasu dostawy (kategoria/dostawca zapisane, widełki „nie ustawiono”).
     pub bez_czasu_dostawy: Vec<usize>,
     pub pominiete: Vec<PominietyWiersz>,
@@ -119,7 +136,7 @@ pub struct RaportImportuKategorii {
 }
 
 fn bez_pustych(s: Option<String>) -> Option<String> {
-    s.map(|x| x.trim().to_string()).filter(|x| !x.is_empty())
+    s.map(|x| nazwy::oczysc(&x)).filter(|x| !x.is_empty())
 }
 
 /// Sprawdza widełki wiersza: obie wartości albo żadna, 0 ≤ min ≤ max ≤ 365.
@@ -127,14 +144,27 @@ pub fn sprawdz_wiersz(w: &WierszImportu) -> Result<Option<(i64, i64)>, String> {
     if w.kategoria.trim().is_empty() {
         return Err("brak nazwy kategorii".into());
     }
-    if w.kategoria.trim().chars().count() > 200 {
-        return Err("nazwa kategorii dłuższa niż 200 znaków".into());
+    if nazwy::oczysc(&w.kategoria).chars().count() > nazwy::MAKS_NAZWY {
+        return Err(format!(
+            "nazwa kategorii dłuższa niż {} znaków",
+            nazwy::MAKS_NAZWY
+        ));
+    }
+    if w.dostawca
+        .as_deref()
+        .is_some_and(|d| nazwy::oczysc(d).chars().count() > nazwy::MAKS_NAZWY)
+    {
+        return Err(format!(
+            "nazwa dostawcy dłuższa niż {} znaków",
+            nazwy::MAKS_NAZWY
+        ));
     }
     match (w.czas_dostawy_min_dni, w.czas_dostawy_max_dni) {
         (None, None) => Ok(None),
-        (Some(_), None) | (None, Some(_)) => {
-            Err("podano tylko jeden z czasów dostawy (min albo max) – uzupełnij oba".into())
-        }
+        (Some(_), None) | (None, Some(_)) => Err(
+            "podano tylko jeden z czasów dostawy (najkrótszy albo najdłuższy) – uzupełnij oba"
+                .into(),
+        ),
         (Some(a), Some(b)) => {
             if a < 0 || b < 0 {
                 Err("czas dostawy nie może być ujemny".into())
@@ -142,7 +172,7 @@ pub fn sprawdz_wiersz(w: &WierszImportu) -> Result<Option<(i64, i64)>, String> {
                 Err(format!("czas dostawy ponad {MAKS_DNI_DOSTAWY} dni"))
             } else if a > b {
                 Err(format!(
-                    "minimalny czas dostawy ({a}) większy niż maksymalny ({b})"
+                    "najkrótszy czas dostawy ({a}) dłuższy niż najdłuższy ({b})"
                 ))
             } else {
                 Ok(Some((a, b)))
@@ -151,18 +181,15 @@ pub fn sprawdz_wiersz(w: &WierszImportu) -> Result<Option<(i64, i64)>, String> {
     }
 }
 
+/// Dostawcy wg klucza nazwy (wczytani raz; nowi dopisywani w trakcie importu).
 async fn znajdz_lub_dodaj_dostawce(
     c: &mut SqliteConnection,
+    znani: &mut HashMap<String, i64>,
     nazwa: &str,
     raport: &mut RaportImportuKategorii,
 ) -> Wynik<i64> {
-    let id: Option<i64> =
-        sqlx::query_scalar("SELECT id FROM dostawcy WHERE nazwa = ?1 COLLATE NOCASE")
-            .bind(nazwa)
-            .fetch_optional(&mut *c)
-            .await?;
-    if let Some(id) = id {
-        return Ok(id);
+    if let Some(id) = znani.get(&nazwy::klucz(nazwa)) {
+        return Ok(*id);
     }
     let id = sqlx::query("INSERT INTO dostawcy (nazwa) VALUES (?1)")
         .bind(nazwa)
@@ -177,8 +204,20 @@ async fn znajdz_lub_dodaj_dostawce(
         "import kategorie-materialow.csv",
     )
     .await?;
+    znani.insert(nazwy::klucz(nazwa), id);
     raport.dostawcy_dodani += 1;
     Ok(id)
+}
+
+/// (id, nazwa, opis, domyślny dostawca, min, max)
+type WierszKategorii = (i64, String, Option<String>, Option<i64>, i64, i64);
+
+struct Kategoria {
+    id: i64,
+    opis: Option<String>,
+    domyslny: Option<i64>,
+    min: i64,
+    max: i64,
 }
 
 pub async fn importuj_kategorie(
@@ -191,8 +230,37 @@ pub async fn importuj_kategorie(
             d.wiersze.len()
         )));
     }
+    let nadpisz = d.nadpisz;
     let mut raport = RaportImportuKategorii::default();
     let mut tx = crate::baza::transakcja_zapisu(pula).await?;
+
+    let mut kategorie: HashMap<String, Kategoria> = HashMap::new();
+    let rows: Vec<WierszKategorii> = sqlx::query_as(
+        "SELECT id, nazwa, opis, domyslny_dostawca_id, dni_dostawy_min, dni_dostawy_max FROM kategorie_materialow ORDER BY id",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    for (id, n, opis, domyslny, min, max) in rows {
+        kategorie.entry(nazwy::klucz(&n)).or_insert(Kategoria {
+            id,
+            opis,
+            domyslny,
+            min,
+            max,
+        });
+    }
+    let mut dostawcy: HashMap<String, i64> = HashMap::new();
+    let rows: Vec<(i64, String)> = sqlx::query_as("SELECT id, nazwa FROM dostawcy ORDER BY id")
+        .fetch_all(&mut *tx)
+        .await?;
+    for (id, n) in rows {
+        dostawcy.entry(nazwy::klucz(&n)).or_insert(id);
+    }
+    // Duplikaty w pliku: (kategoria, dostawca) po kluczu → numer pierwszego wiersza.
+    let mut widziane: HashMap<(String, String), usize> = HashMap::new();
+    let mut cokolwiek = false;
+    let mut zaktualizowane: std::collections::HashSet<i64> = Default::default();
+
     for (i, w) in d.wiersze.into_iter().enumerate() {
         let nr = w.wiersz.unwrap_or(i + 2);
         let widelki = match sprawdz_wiersz(&w) {
@@ -202,27 +270,45 @@ pub async fn importuj_kategorie(
                 continue;
             }
         };
-        let nazwa = w.kategoria.trim().to_string();
+        let nazwa = nazwy::oczysc(&w.kategoria);
         let przyklady = bez_pustych(w.przykladowe_materialy);
         let dostawca = bez_pustych(w.dostawca);
+        let klucz_k = nazwy::klucz(&nazwa);
+        let klucz_wiersza = (
+            klucz_k.clone(),
+            dostawca.as_deref().map(nazwy::klucz).unwrap_or_default(),
+        );
+        if let Some(pierwszy) = widziane.get(&klucz_wiersza) {
+            raport.pominiete.push(PominietyWiersz {
+                wiersz: nr,
+                powod: format!(
+                    "powtórzona kategoria{} – obowiązuje wiersz {pierwszy}",
+                    if dostawca.is_some() {
+                        " i dostawca"
+                    } else {
+                        ""
+                    }
+                ),
+            });
+            continue;
+        }
+        widziane.insert(klucz_wiersza, nr);
 
-        let istniejaca: Option<(i64, Option<String>, Option<i64>)> = sqlx::query_as(
-            "SELECT id, opis, domyslny_dostawca_id FROM kategorie_materialow WHERE nazwa = ?1 COLLATE NOCASE",
-        )
-        .bind(&nazwa)
-        .fetch_optional(&mut *tx)
-        .await?;
-        let (kat_id, domyslny) = match istniejaca {
-            Some((id, opis, dom)) => {
-                if opis.is_none() && przyklady.is_some() {
+        let mut zmiany_kategorii: Vec<String> = Vec::new();
+        let dostawcy_przed = raport.dostawcy_dodani;
+        let dodane_przed = raport.kategorie_dodane;
+        let kat_id = match kategorie.get_mut(&klucz_k) {
+            Some(k) => {
+                if k.opis.is_none() && przyklady.is_some() {
                     sqlx::query("UPDATE kategorie_materialow SET opis = ?1 WHERE id = ?2")
                         .bind(&przyklady)
-                        .bind(id)
+                        .bind(k.id)
                         .execute(&mut *tx)
                         .await?;
+                    k.opis = przyklady.clone();
+                    zmiany_kategorii.push("opis".into());
                 }
-                raport.kategorie_zaktualizowane += 1;
-                (id, dom)
+                k.id
             }
             None => {
                 let id =
@@ -232,74 +318,190 @@ pub async fn importuj_kategorie(
                         .execute(&mut *tx)
                         .await?
                         .last_insert_rowid();
+                do_dziennika(
+                    &mut tx,
+                    "kategorie_materialow",
+                    id,
+                    "dodanie",
+                    &format!("import kategorie-materialow.csv, wiersz {nr}"),
+                )
+                .await?;
                 raport.kategorie_dodane += 1;
-                (id, None)
+                cokolwiek = true;
+                kategorie.insert(
+                    klucz_k.clone(),
+                    Kategoria {
+                        id,
+                        opis: przyklady.clone(),
+                        domyslny: None,
+                        min: 0,
+                        max: 0,
+                    },
+                );
+                id
             }
         };
-        do_dziennika(
-            &mut tx,
-            "kategorie_materialow",
-            kat_id,
-            "zmiana",
-            &format!("import kategorie-materialow.csv, wiersz {nr}"),
-        )
-        .await?;
 
         let dostawca_id = match &dostawca {
-            Some(n) => Some(znajdz_lub_dodaj_dostawce(&mut tx, n, &mut raport).await?),
+            Some(n) => {
+                Some(znajdz_lub_dodaj_dostawce(&mut tx, &mut dostawcy, n, &mut raport).await?)
+            }
             None => None,
         };
-        if let (Some(dost), None) = (dostawca_id, domyslny) {
+        let k = kategorie
+            .get_mut(&klucz_k)
+            .expect("kategoria wczytana lub dodana");
+        if let (Some(dost), None) = (dostawca_id, k.domyslny) {
             sqlx::query("UPDATE kategorie_materialow SET domyslny_dostawca_id = ?1 WHERE id = ?2")
                 .bind(dost)
                 .bind(kat_id)
                 .execute(&mut *tx)
                 .await?;
+            k.domyslny = Some(dost);
+            zmiany_kategorii.push("domyślny dostawca".into());
         }
+        let mut zmieniono_czas = false;
         match (widelki, dostawca_id) {
-            (None, _) => raport.bez_czasu_dostawy.push(nr),
+            (None, dost) => {
+                // „do uzupełnienia” tylko wtedy, gdy kategoria (i para) nadal nie ma widełek
+                let para: Option<i64> = match dost {
+                    Some(dost) => sqlx::query_scalar(
+                        "SELECT id FROM czasy_dostaw WHERE kategoria_id = ?1 AND dostawca_id = ?2",
+                    )
+                    .bind(kat_id)
+                    .bind(dost)
+                    .fetch_optional(&mut *tx)
+                    .await?,
+                    None => None,
+                };
+                if k.min == 0 && k.max == 0 && para.is_none() {
+                    raport.bez_czasu_dostawy.push(nr);
+                }
+            }
             (Some((min, max)), Some(dost)) => {
-                sqlx::query(
-                    "INSERT INTO czasy_dostaw (kategoria_id, dostawca_id, dni_min, dni_max) VALUES (?1, ?2, ?3, ?4) \
-                     ON CONFLICT(kategoria_id, dostawca_id) DO UPDATE SET dni_min = excluded.dni_min, dni_max = excluded.dni_max",
+                let obecna: Option<(i64, i64, i64)> = sqlx::query_as(
+                    "SELECT id, dni_min, dni_max FROM czasy_dostaw WHERE kategoria_id = ?1 AND dostawca_id = ?2",
                 )
                 .bind(kat_id)
                 .bind(dost)
-                .bind(min)
-                .bind(max)
-                .execute(&mut *tx)
+                .fetch_optional(&mut *tx)
                 .await?;
-                let id: i64 = sqlx::query_scalar(
-                    "SELECT id FROM czasy_dostaw WHERE kategoria_id = ?1 AND dostawca_id = ?2",
-                )
-                .bind(kat_id)
-                .bind(dost)
-                .fetch_one(&mut *tx)
-                .await?;
-                do_dziennika(
-                    &mut tx,
-                    "czasy_dostaw",
-                    id,
-                    "zmiana",
-                    "import kategorie-materialow.csv",
-                )
-                .await?;
-                raport.czasy_dostaw_ustawione += 1;
+                match obecna {
+                    Some((_, a, b)) if (a, b) == (min, max) => {}
+                    Some((_, a, b)) if !nadpisz => {
+                        raport.pozostawione.push(PominietyWiersz {
+                            wiersz: nr,
+                            powod: format!(
+                                "{nazwa} – {}: ustawione {a}–{b} dni, w pliku {min}–{max} – pozostawiono ustawione",
+                                dostawca.as_deref().unwrap_or_default()
+                            ),
+                        });
+                    }
+                    Some((id, _, _)) => {
+                        sqlx::query(
+                            "UPDATE czasy_dostaw SET dni_min = ?1, dni_max = ?2 WHERE id = ?3",
+                        )
+                        .bind(min)
+                        .bind(max)
+                        .bind(id)
+                        .execute(&mut *tx)
+                        .await?;
+                        do_dziennika(
+                            &mut tx,
+                            "czasy_dostaw",
+                            id,
+                            "zmiana",
+                            &format!("import kategorie-materialow.csv (nadpisanie), wiersz {nr}"),
+                        )
+                        .await?;
+                        zmieniono_czas = true;
+                    }
+                    None => {
+                        let id = sqlx::query(
+                            "INSERT INTO czasy_dostaw (kategoria_id, dostawca_id, dni_min, dni_max) VALUES (?1, ?2, ?3, ?4)",
+                        )
+                        .bind(kat_id)
+                        .bind(dost)
+                        .bind(min)
+                        .bind(max)
+                        .execute(&mut *tx)
+                        .await?
+                        .last_insert_rowid();
+                        do_dziennika(
+                            &mut tx,
+                            "czasy_dostaw",
+                            id,
+                            "dodanie",
+                            &format!("import kategorie-materialow.csv, wiersz {nr}"),
+                        )
+                        .await?;
+                        zmieniono_czas = true;
+                    }
+                }
             }
             (Some((min, max)), None) => {
-                sqlx::query(
-                    "UPDATE kategorie_materialow SET dni_dostawy_min = ?1, dni_dostawy_max = ?2 WHERE id = ?3",
-                )
-                .bind(min)
-                .bind(max)
-                .bind(kat_id)
-                .execute(&mut *tx)
-                .await?;
-                raport.czasy_dostaw_ustawione += 1;
+                let nieustawione = k.min == 0 && k.max == 0;
+                if (k.min, k.max) == (min, max) {
+                    // bez zmian
+                } else if nieustawione || nadpisz {
+                    sqlx::query(
+                        "UPDATE kategorie_materialow SET dni_dostawy_min = ?1, dni_dostawy_max = ?2 WHERE id = ?3",
+                    )
+                    .bind(min)
+                    .bind(max)
+                    .bind(kat_id)
+                    .execute(&mut *tx)
+                    .await?;
+                    k.min = min;
+                    k.max = max;
+                    zmiany_kategorii.push(format!("widełki {min}–{max} dni"));
+                    zmieniono_czas = true;
+                } else {
+                    raport.pozostawione.push(PominietyWiersz {
+                        wiersz: nr,
+                        powod: format!(
+                            "{nazwa}: ustawione {}–{} dni, w pliku {min}–{max} – pozostawiono ustawione",
+                            k.min, k.max
+                        ),
+                    });
+                }
             }
         }
+        if !zmiany_kategorii.is_empty() {
+            do_dziennika(
+                &mut tx,
+                "kategorie_materialow",
+                kat_id,
+                "zmiana",
+                &format!(
+                    "import kategorie-materialow.csv, wiersz {nr}: {}",
+                    zmiany_kategorii.join(", ")
+                ),
+            )
+            .await?;
+            cokolwiek = true;
+        }
+        if zmieniono_czas {
+            raport.czasy_dostaw_ustawione += 1;
+            cokolwiek = true;
+        }
+        let nowa = raport.kategorie_dodane > dodane_przed;
+        if !nowa && !zmiany_kategorii.is_empty() {
+            zaktualizowane.insert(kat_id);
+        }
+        if !nowa
+            && !zmieniono_czas
+            && zmiany_kategorii.is_empty()
+            && raport.dostawcy_dodani == dostawcy_przed
+            && !raport.pozostawione.iter().any(|p| p.wiersz == nr)
+        {
+            raport.bez_zmian += 1;
+        }
     }
-    raport.przeliczenie = t::przelicz_wszystkie_w(&mut tx).await?;
+    if cokolwiek || raport.dostawcy_dodani > 0 {
+        raport.przeliczenie = t::przelicz_wszystkie_w(&mut tx).await?;
+    }
+    raport.kategorie_zaktualizowane = zaktualizowane.len();
     tx.commit().await?;
     Ok(raport)
 }
@@ -318,6 +520,17 @@ async fn importuj(
 
 // --- Zakres dni wolnych -----------------------------------------------------------
 
+/// Co zrobić z dniami w zakresie, które są już wpisane z innym rodzajem albo opisem.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Kolizje {
+    /// Domyślnie: zostawić je bez zmian (zakres obejmie tylko wolne dni).
+    #[default]
+    Pomin,
+    /// Za jawną zgodą użytkownika: zastąpić je rodzajem i opisem zakresu.
+    Nadpisz,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ZakresDniWolnych {
@@ -329,11 +542,25 @@ pub struct ZakresDniWolnych {
     pub rodzaj: Option<String>,
     #[serde(default)]
     pub opis: Option<String>,
+    #[serde(default)]
+    pub kolizje: Kolizje,
+}
+
+#[derive(Debug, Clone, Serialize, sqlx::FromRow, PartialEq)]
+pub struct DzienWZakresie {
+    pub data: String,
+    pub rodzaj: String,
+    pub opis: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct WynikZakresu {
+    /// Dni zapisane (dodane albo zmienione) / usunięte.
     pub dni: usize,
+    /// Dni wpisane wcześniej z innym rodzajem lub opisem, pozostawione bez zmian.
+    pub pozostawione: Vec<DzienWZakresie>,
+    /// Dni wpisane wcześniej z innym rodzajem lub opisem, zastąpione (tylko `kolizje: "nadpisz"`).
+    pub nadpisane: Vec<DzienWZakresie>,
     #[serde(flatten)]
     pub przeliczenie: WynikPrzeliczeniaWszystkich,
 }
@@ -342,7 +569,8 @@ fn sprawdz_zakres(od: NaiveDate, do_: NaiveDate) -> Wynik<Vec<String>> {
     for d in [od, do_] {
         if !kalendarz::obslugiwany_rok(chrono::Datelike::year(&d)) {
             return Err(BladApi::NieprawidloweDane(format!(
-                "data {d} spoza obsługiwanego zakresu lat {}–{}",
+                "data {} spoza obsługiwanego zakresu lat {}–{}",
+                kalendarz::data_pl(d),
                 kalendarz::ROK_MIN,
                 kalendarz::ROK_MAX
             )));
@@ -368,21 +596,79 @@ fn sprawdz_zakres(od: NaiveDate, do_: NaiveDate) -> Wynik<Vec<String>> {
 
 const RODZAJE: [&str; 4] = ["swieto", "urlop", "przerwa_dostawcow", "inne"];
 
-async fn dodaj_zakres(
-    State(s): State<StanApi>,
-    Cialo(z): Cialo<ZakresDniWolnych>,
-) -> Wynik<Json<WynikZakresu>> {
-    let dni = sprawdz_zakres(z.od, z.do_)?;
-    let rodzaj = z.rodzaj.unwrap_or_else(|| "urlop".into());
+fn sprawdz_rodzaj(r: Option<String>) -> Wynik<String> {
+    let rodzaj = r.unwrap_or_else(|| "urlop".into());
     if !RODZAJE.contains(&rodzaj.as_str()) {
         return Err(BladApi::NieprawidloweDane(format!(
             "nieznany rodzaj dnia wolnego „{rodzaj}” (dozwolone: {})",
             RODZAJE.join(", ")
         )));
     }
+    Ok(rodzaj)
+}
+
+async fn dni_w_zakresie(
+    c: &mut SqliteConnection,
+    od: NaiveDate,
+    do_: NaiveDate,
+) -> Wynik<Vec<DzienWZakresie>> {
+    Ok(sqlx::query_as(
+        "SELECT data, rodzaj, opis FROM dni_wolne WHERE data >= ?1 AND data <= ?2 ORDER BY data",
+    )
+    .bind(od.format("%Y-%m-%d").to_string())
+    .bind(do_.format("%Y-%m-%d").to_string())
+    .fetch_all(&mut *c)
+    .await?)
+}
+
+/// Dni w zakresie wpisane już z innym rodzajem lub opisem niż podane (kolizje).
+pub async fn kolizje_zakresu(
+    c: &mut SqliteConnection,
+    od: NaiveDate,
+    do_: NaiveDate,
+    rodzaj: &str,
+    opis: &Option<String>,
+) -> Wynik<Vec<DzienWZakresie>> {
+    Ok(dni_w_zakresie(c, od, do_)
+        .await?
+        .into_iter()
+        .filter(|d| d.rodzaj != rodzaj || &d.opis != opis)
+        .collect())
+}
+
+/// `POST /kalendarz/dni-wolne/kolizje` – podgląd przed zapisem zakresu (bez zmian w bazie).
+async fn podglad_kolizji(
+    State(s): State<StanApi>,
+    Cialo(z): Cialo<ZakresDniWolnych>,
+) -> Wynik<Json<Vec<DzienWZakresie>>> {
+    sprawdz_zakres(z.od, z.do_)?;
+    let rodzaj = sprawdz_rodzaj(z.rodzaj)?;
     let opis = bez_pustych(z.opis);
-    let mut tx = crate::baza::transakcja_zapisu(&s.pula).await?;
+    let mut c = s.pula.acquire().await?;
+    Ok(Json(
+        kolizje_zakresu(&mut c, z.od, z.do_, &rodzaj, &opis).await?,
+    ))
+}
+
+pub async fn zapisz_zakres(pula: &sqlx::SqlitePool, z: ZakresDniWolnych) -> Wynik<WynikZakresu> {
+    let dni = sprawdz_zakres(z.od, z.do_)?;
+    let rodzaj = sprawdz_rodzaj(z.rodzaj)?;
+    let opis = bez_pustych(z.opis);
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
+    let istniejace = dni_w_zakresie(&mut tx, z.od, z.do_).await?;
+    let mut pozostawione = Vec::new();
+    let mut nadpisane = Vec::new();
+    let mut zapisane = 0;
     for d in &dni {
+        match istniejace.iter().find(|x| &x.data == d) {
+            Some(x) if x.rodzaj == rodzaj && x.opis == opis => continue,
+            Some(x) if z.kolizje == Kolizje::Pomin => {
+                pozostawione.push(x.clone());
+                continue;
+            }
+            Some(x) => nadpisane.push(x.clone()),
+            None => {}
+        }
         sqlx::query(
             "INSERT INTO dni_wolne (data, rodzaj, opis) VALUES (?1, ?2, ?3) \
              ON CONFLICT(data) DO UPDATE SET rodzaj = excluded.rodzaj, opis = excluded.opis",
@@ -392,25 +678,54 @@ async fn dodaj_zakres(
         .bind(&opis)
         .execute(&mut *tx)
         .await?;
+        zapisane += 1;
     }
-    do_dziennika(
-        &mut tx,
-        "dni_wolne",
-        0,
-        "zmiana",
-        &format!("zakres {} – {}", z.od, z.do_),
-    )
-    .await?;
-    let p = t::przelicz_wszystkie_w(&mut tx).await?;
+    let p = if zapisane > 0 {
+        do_dziennika(
+            &mut tx,
+            "dni_wolne",
+            0,
+            "zmiana",
+            &format!(
+                "zakres {} – {}: zapisano {zapisane} dni{}",
+                kalendarz::data_pl(z.od),
+                kalendarz::data_pl(z.do_),
+                if nadpisane.is_empty() {
+                    String::new()
+                } else {
+                    format!(", zastąpiono {} wpisanych osobno", nadpisane.len())
+                }
+            ),
+        )
+        .await?;
+        t::przelicz_wszystkie_w(&mut tx).await?
+    } else {
+        WynikPrzeliczeniaWszystkich::default()
+    };
     tx.commit().await?;
-    wyslij(&s, "dni_wolne", 0);
-    powiadom(&s, &p);
-    Ok(Json(WynikZakresu {
-        dni: dni.len(),
+    Ok(WynikZakresu {
+        dni: zapisane,
+        pozostawione,
+        nadpisane,
         przeliczenie: p,
-    }))
+    })
 }
 
+async fn dodaj_zakres(
+    State(s): State<StanApi>,
+    Cialo(z): Cialo<ZakresDniWolnych>,
+) -> Wynik<Json<WynikZakresu>> {
+    let w = zapisz_zakres(&s.pula, z).await?;
+    if w.dni > 0 {
+        wyslij(&s, "dni_wolne", 0);
+        powiadom(&s, &w.przeliczenie);
+    }
+    Ok(Json(w))
+}
+
+/// Usunięcie zakresu. Domyślnie usuwane są tylko dni o podanym rodzaju i opisie (tak jak je
+/// pogrupowano w tabeli ustawień); dni wpisane osobno z innym rodzajem/opisem zostają
+/// (`pozostawione`). `wszystkie: true` – jawna zgoda na usunięcie każdego dnia w zakresie.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ZakresDoUsuniecia {
@@ -418,36 +733,78 @@ pub struct ZakresDoUsuniecia {
     pub od: NaiveDate,
     #[serde(rename = "do", deserialize_with = "t::wej::data")]
     pub do_: NaiveDate,
+    #[serde(default)]
+    pub rodzaj: Option<String>,
+    #[serde(default)]
+    pub opis: Option<String>,
+    #[serde(default)]
+    pub wszystkie: bool,
+}
+
+pub async fn usun_zakres_dni(pula: &sqlx::SqlitePool, z: ZakresDoUsuniecia) -> Wynik<WynikZakresu> {
+    sprawdz_zakres(z.od, z.do_)?;
+    if z.rodzaj.is_none() && !z.wszystkie {
+        return Err(BladApi::NieprawidloweDane(
+            "podaj rodzaj (i opis) usuwanych dni albo „wszystkie”: true".into(),
+        ));
+    }
+    let rodzaj = match z.rodzaj {
+        Some(r) => Some(sprawdz_rodzaj(Some(r))?),
+        None => None,
+    };
+    let opis = bez_pustych(z.opis);
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
+    let istniejace = dni_w_zakresie(&mut tx, z.od, z.do_).await?;
+    let mut pozostawione = Vec::new();
+    let mut usuniete = 0;
+    for d in istniejace {
+        let pasuje = z.wszystkie || (Some(&d.rodzaj) == rodzaj.as_ref() && d.opis == opis);
+        if !pasuje {
+            pozostawione.push(d);
+            continue;
+        }
+        sqlx::query("DELETE FROM dni_wolne WHERE data = ?1")
+            .bind(&d.data)
+            .execute(&mut *tx)
+            .await?;
+        usuniete += 1;
+    }
+    let p = if usuniete > 0 {
+        do_dziennika(
+            &mut tx,
+            "dni_wolne",
+            0,
+            "usuniecie",
+            &format!(
+                "zakres {} – {}: usunięto {usuniete} dni",
+                kalendarz::data_pl(z.od),
+                kalendarz::data_pl(z.do_)
+            ),
+        )
+        .await?;
+        t::przelicz_wszystkie_w(&mut tx).await?
+    } else {
+        WynikPrzeliczeniaWszystkich::default()
+    };
+    tx.commit().await?;
+    Ok(WynikZakresu {
+        dni: usuniete,
+        pozostawione,
+        nadpisane: Vec::new(),
+        przeliczenie: p,
+    })
 }
 
 async fn usun_zakres(
     State(s): State<StanApi>,
     Cialo(z): Cialo<ZakresDoUsuniecia>,
 ) -> Wynik<Json<WynikZakresu>> {
-    sprawdz_zakres(z.od, z.do_)?;
-    let mut tx = crate::baza::transakcja_zapisu(&s.pula).await?;
-    let n = sqlx::query("DELETE FROM dni_wolne WHERE data >= ?1 AND data <= ?2")
-        .bind(z.od.format("%Y-%m-%d").to_string())
-        .bind(z.do_.format("%Y-%m-%d").to_string())
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-    do_dziennika(
-        &mut tx,
-        "dni_wolne",
-        0,
-        "usuniecie",
-        &format!("zakres {} – {}", z.od, z.do_),
-    )
-    .await?;
-    let p = t::przelicz_wszystkie_w(&mut tx).await?;
-    tx.commit().await?;
-    wyslij(&s, "dni_wolne", 0);
-    powiadom(&s, &p);
-    Ok(Json(WynikZakresu {
-        dni: n as usize,
-        przeliczenie: p,
-    }))
+    let w = usun_zakres_dni(&s.pula, z).await?;
+    if w.dni > 0 {
+        wyslij(&s, "dni_wolne", 0);
+        powiadom(&s, &w.przeliczenie);
+    }
+    Ok(Json(w))
 }
 
 // --- Wiersze specyfikacji do okna „zamówić mimo to?” --------------------------------

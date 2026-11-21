@@ -447,7 +447,7 @@ async fn p06_nieaktualny_harmonogram_jawnie_oznaczony() {
     assert!(z["harmonogram_nieaktualny_powod"]
         .as_str()
         .unwrap()
-        .contains("montaz_od"));
+        .contains("termin rozpoczęcia montażu"));
     let z = app.ok("GET", &format!("/api/v1/zlecenia/{zl}"), None).await;
     assert_eq!(z["harmonogram_nieaktualny"], true);
 
@@ -482,7 +482,7 @@ async fn p06_nieaktualny_harmonogram_jawnie_oznaczony() {
     assert!(u["nieprzeliczone_zlecenia"][0]["powod"]
         .as_str()
         .unwrap()
-        .contains("montaz_od"));
+        .contains("termin rozpoczęcia montażu"));
 
     // po uzupełnieniu terminu znacznik znika
     let z = app
@@ -611,7 +611,7 @@ async fn p08_zapis_i_przeliczenie_w_jednej_transakcji() {
     assert!(w["harmonogram_nieaktualny_powod"]
         .as_str()
         .unwrap()
-        .contains("czas_montazu_dni"));
+        .contains("czas montażu"));
 }
 
 async fn specyfikacja_do_potwierdzenia(app: &Aplikacja, s: &Scenariusz) -> i64 {

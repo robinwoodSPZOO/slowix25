@@ -385,7 +385,7 @@ pub async fn importuj_slowniki(pula: &SqlitePool, j: &Value) -> Wynik<RaportImpo
             .fetch_all(&mut *tx)
             .await?
             .into_iter()
-            .map(|(id, n)| (n.to_lowercase(), id))
+            .map(|(id, n)| (crate::nazwy::klucz(&n), id))
             .collect();
     let mut kolejnosc: HashMap<String, i64> = sqlx::query_as::<_, (String, i64)>(
         "SELECT slownik_kod, COALESCE(MAX(kolejnosc), 0) FROM pozycje_slownika GROUP BY slownik_kod",
@@ -420,16 +420,16 @@ pub async fn importuj_slowniki(pula: &SqlitePool, j: &Value) -> Wynik<RaportImpo
             continue;
         }
         let kat = match &p.kategoria {
-            Some(k) => Some(match kategorie.get(&k.to_lowercase()) {
+            Some(k) => Some(match kategorie.get(&crate::nazwy::klucz(k)) {
                 Some(id) => *id,
                 None => {
                     let id = sqlx::query("INSERT INTO kategorie_materialow (nazwa) VALUES (?1)")
-                        .bind(k)
+                        .bind(crate::nazwy::oczysc(k))
                         .execute(&mut *tx)
                         .await?
                         .last_insert_rowid();
                     raport.nowe_kategorie.push(k.clone());
-                    kategorie.insert(k.to_lowercase(), id);
+                    kategorie.insert(crate::nazwy::klucz(k), id);
                     id
                 }
             }),

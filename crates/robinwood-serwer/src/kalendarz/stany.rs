@@ -5,6 +5,7 @@ use serde::Serialize;
 
 use super::dni::KalendarzDni;
 use super::harmonogram::UstawieniaTerminow;
+use super::{data_pl, dni_pl};
 
 /// Kolor ostrzeżenia. Kolejność = waga (większy = pilniejszy).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -89,10 +90,21 @@ pub fn stan_zamowienia(
         let nowy_montaz = przesun(kal, z.montaz_od, przesuniecie);
         return StanZadania {
             stan: Stan::Czerwony,
-            opis: format!(
-                "Po terminie krytycznym ({}). Zamówione dziś dotrze ok. {dostawa} – montaż przesunie się o {przesuniecie} dni (na {nowy_montaz})",
-                z.krytyczna
-            ),
+            opis: if przesuniecie > 0 {
+                format!(
+                    "Po terminie krytycznym ({}). Zamówione dziś dotrze ok. {} – montaż przesunie się o {} (na {})",
+                    data_pl(z.krytyczna),
+                    data_pl(dostawa),
+                    dni_pl(przesuniecie),
+                    data_pl(nowy_montaz)
+                )
+            } else {
+                format!(
+                    "Po terminie krytycznym ({}). Zamówione dziś dotrze ok. {} – jeszcze bez przesunięcia montażu",
+                    data_pl(z.krytyczna),
+                    data_pl(dostawa)
+                )
+            },
             dni_do_terminu: Some((z.krytyczna - dzis).num_days()),
             przesuniecie_montazu_dni: Some(przesuniecie),
             nowy_termin_montazu: Some(nowy_montaz),
@@ -102,7 +114,10 @@ pub fn stan_zamowienia(
     if dzis >= prog {
         return StanZadania::nowy(
             Stan::Pomaranczowy,
-            format!("Zamów natychmiast – termin krytyczny {}", z.krytyczna),
+            format!(
+                "Zamów natychmiast – termin krytyczny {}",
+                data_pl(z.krytyczna)
+            ),
             Some((z.krytyczna - dzis).num_days()),
         );
     }
@@ -111,7 +126,8 @@ pub fn stan_zamowienia(
             Stan::Zolty,
             format!(
                 "Minęła data planowa ({}), termin krytyczny {}",
-                z.planowa, z.krytyczna
+                data_pl(z.planowa),
+                data_pl(z.krytyczna)
             ),
             Some((z.krytyczna - dzis).num_days()),
         );
@@ -119,7 +135,7 @@ pub fn stan_zamowienia(
     if dzis >= z.sweet_spot {
         StanZadania::nowy(
             Stan::Spokojnie,
-            format!("W oknie zamówienia – zamów do {}", z.planowa),
+            format!("W oknie zamówienia – zamów do {}", data_pl(z.planowa)),
             Some(dni_do_planowej),
         )
     } else {
@@ -127,7 +143,8 @@ pub fn stan_zamowienia(
             Stan::Spokojnie,
             format!(
                 "Okno zamówienia od {} (planowo {})",
-                z.sweet_spot, z.planowa
+                data_pl(z.sweet_spot),
+                data_pl(z.planowa)
             ),
             Some(dni_do_planowej),
         )
@@ -147,23 +164,27 @@ pub fn stan_terminu(
     if dzis > termin {
         StanZadania::nowy(
             Stan::Czerwony,
-            format!("Termin minął ({termin})"),
+            format!("Termin minął ({})", data_pl(termin)),
             Some(dni),
         )
     } else if dzis >= kal.wstecz(termin, ustawienia.prog_zbliza_sie_dni) {
         StanZadania::nowy(
             Stan::Zolty,
-            format!("Zbliża się termin ({termin})"),
+            format!("Zbliża się termin ({})", data_pl(termin)),
             Some(dni),
         )
     } else {
-        StanZadania::nowy(Stan::Spokojnie, format!("Termin {termin}"), Some(dni))
+        StanZadania::nowy(
+            Stan::Spokojnie,
+            format!("Termin {}", data_pl(termin)),
+            Some(dni),
+        )
     }
 }
 
 /// Stan zadania wykonanego.
 pub fn stan_wykonane(kiedy: NaiveDate) -> StanZadania {
-    StanZadania::nowy(Stan::Wykonane, format!("Wykonano {kiedy}"), None)
+    StanZadania::nowy(Stan::Wykonane, format!("Wykonano {}", data_pl(kiedy)), None)
 }
 
 /// Nowy termin rozpoczęcia montażu po przesunięciu o `dni` (w trybie liczenia). Wynik zawsze
@@ -183,6 +204,28 @@ mod testy {
 
     fn d(r: i32, m: u32, dz: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(r, m, dz).unwrap()
+    }
+
+    #[test]
+    fn opisy_po_polsku_z_datami_dd_mm_rrrr() {
+        let u = ust(LiczenieDni::Kalendarzowe);
+        let kal = KalendarzDni::nowy(LiczenieDni::Kalendarzowe, []);
+        let s = stan_terminu(d(2026, 9, 29), d(2026, 10, 2), &u, &kal);
+        assert_eq!(s.opis, "Termin minął (29.09.2026)");
+        assert_eq!(stan_wykonane(d(2026, 1, 5)).opis, "Wykonano 05.01.2026");
+        let z = DaneZamowienia {
+            sweet_spot: d(2026, 11, 2),
+            planowa: d(2026, 11, 9),
+            krytyczna: d(2026, 11, 13),
+            wymagana_dostawa: d(2026, 11, 20),
+            dni_srednia: 7,
+            montaz_od: d(2026, 12, 7),
+        };
+        let s = stan_zamowienia(&z, d(2026, 11, 12), &u, &kal);
+        assert_eq!(s.opis, "Zamów natychmiast – termin krytyczny 13.11.2026");
+        let s = stan_zamowienia(&z, d(2026, 11, 14), &u, &kal);
+        assert!(!s.opis.contains("2026-"), "{}", s.opis);
+        assert!(s.opis.contains("13.11.2026"), "{}", s.opis);
     }
 
     fn ust(tryb: LiczenieDni) -> UstawieniaTerminow {
