@@ -12,7 +12,7 @@ export const KROKI_SZABLONU: { tytul: string; opis: string }[] = [
   },
   {
     tytul: "Wstaw tabele jednym polem",
-    opis: "W załączniku nr 1 usuń przykładową tabelę specyfikacji i w jej miejsce wpisz w osobnym akapicie [specyfikacja]. Blok harmonogramu płatności zastąp akapitem [harmonogram płatności], a tabelę etapów w załączniku nr 2 – akapitem [harmonogram etapów].",
+    opis: "W załączniku nr 1 usuń przykładową tabelę specyfikacji i w jej miejsce wpisz w osobnym akapicie [specyfikacja]. Harmonogram płatności: kontrolkę treści „Harmonogram płatności” z dotychczasowego formularza można zostawić (program wstawi w niej tabelę rat), a w zwykłym tekście wpisz akapit [harmonogram płatności]. Tabelę etapów w załączniku nr 2 zastąp akapitem [harmonogram etapów].",
   },
   {
     tytul: "Oznacz załączniki opcjonalne",
@@ -24,7 +24,7 @@ export const KROKI_SZABLONU: { tytul: string; opis: string }[] = [
   },
   {
     tytul: "Kwoty i daty",
-    opis: "Kwoty są wstawiane bez „zł” (np. 48 352,00) – „zł” zostaw w tekście szablonu. Kwoty słownie mają postać „… złotych 00/100”. Daty – DD.MM.RRRR. Dane firmy (nazwa, adres, NIP, bank, rachunek) pochodzą z Oferty → Dane firmy, nie z szablonu.",
+    opis: "Kwoty są wstawiane bez „zł” (np. 48 352,00) – „zł” zostaw w tekście szablonu. Kwoty słownie mają postać „… złote 00/100” (z poprawną odmianą). Daty – DD.MM.RRRR. Dane firmy (nazwa, adres, NIP, bank, rachunek) pochodzą z Oferty → Dane firmy, nie z szablonu.",
   },
   {
     tytul: "Wgraj i sprawdź",

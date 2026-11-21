@@ -9,6 +9,8 @@ Aplikacja na Windows dla firmy ROBINWOOD (meble na wymiar). Docelowo obejmuje:
 
 Jedna baza danych leży na komputerze-**serwerze** w sieci firmowej (Wi-Fi/LAN), pozostałe komputery (**klienci**) łączą się z nim. Nie ma chmury.
 
+> **Gałąź `faza-3-umowy`** – Generator Umów: umowa z oferty lub od zera, numeracja z ustawień, skrócona forma (klient, miejsce montażu, terminy, płatności A/B z kontrolą sumy, VAT §9, załączniki, produkcja), zamrożenie po wysłaniu/podpisaniu, kwoty słownie, dokument z szablonu DOCX użytkownika (pola w nawiasach kwadratowych, kontrolki treści, bloki warunkowe; PDF przez Word/LibreOffice), wpłaty i saldo, protokół odbioru, aneksy, harmonogram etapów, zlecenie z materiałami i harmonogramem po podpisaniu. Szczegóły: [docs/ARCHITEKTURA.md](docs/ARCHITEKTURA.md), rozdz. 11; przygotowanie szablonu: [docs/SZABLON_UMOWY.md](docs/SZABLON_UMOWY.md).
+>
 > **Stan: gałąź `integracja-1`** – Faza 2 (Generator Ofert, z poprawkami po recenzji) + Faza 4a (silnik terminów kalendarza: harmonogram liczony wstecz od montażu, zamówienia materiałów z widełkami, stany ostrzeżeń, API kalendarza; blokady „do potwierdzenia” powiązane ze specyfikacją umowy). Generator Ofert: specyfikacja mebli z edytorem (drzewo sekcji/części, tabela wierszy z klawiaturą i podpowiedziami, szablony mebli), oferty z wersjami, statusami i porównaniem wersji, wycena (poziom części/sekcji/całości, rabaty, VAT 8/23%, AGD osobno, marża wewnętrzna), zdjęcia, eksport PDF/DOCX, import słowników i szablonów z plików JSON, wspólne tokeny i komponenty interfejsu; po recenzji: autozapis i szkice, wykrywanie konfliktów dwóch stanowisk, zamrażanie wysłanych wersji, limity i odporność na przepełnienia, PDF z poprawnym łamaniem stron. Szczegóły: [docs/ARCHITEKTURA.md](docs/ARCHITEKTURA.md), rozdz. 7–9 (oferty) i 10 (silnik terminów); konwencje błędów, transakcji zapisu i migracji – rozdz. 3–5.
 >
 > **Faza 0 – szkielet.** Działa: tryb serwer/klient, baza z pełnym schematem i migracjami, API (klienci – pełny CRUD, słowniki, kategorie materiałów, zdarzenia WebSocket), nawigacja po modułach, lista i karta klienta, ustawienia trybu pracy, wykrywanie serwera w sieci (mDNS), ikona w zasobniku, autostart, powiadomienie testowe, okno-widżet (bez danych). Pozostałe moduły to zaślepki. Wygląd jest tymczasowy – ekrany będą projektowane w Figmie.
@@ -72,6 +74,7 @@ src/                     interfejs (React + TypeScript)
 src-tauri/               aplikacja okienkowa (Tauri 2): okna, zasobnik, autostart, powiadomienia, tryb pracy
 crates/robinwood-serwer/ baza SQLite, migracje, API HTTP/WebSocket (axum), mDNS – bez zależności od Tauri
 docs/ARCHITEKTURA.md     architektura, schemat danych i konwencje dla kolejnych faz
+docs/SZABLON_UMOWY.md    jak przygotować szablon umowy/aneksu (dla użytkownika)
 ```
 
 Szczegóły: [docs/ARCHITEKTURA.md](docs/ARCHITEKTURA.md).

@@ -1,6 +1,6 @@
 # Architektura programu ROBINWOOD
 
-Dokument dla kolejnych agentów i programistów. Stan: gałąź `integracja-1` = Faza 0 (szkielet) + Faza 2 (Generator Ofert z poprawkami po recenzji, rozdz. 7–9) + Faza 4a (silnik terminów, rozdz. 10). Wspólne konwencje błędów, transakcji i migracji: rozdz. 3–5.
+Dokument dla kolejnych agentów i programistów. Stan: gałąź `integracja-1` = Faza 0 (szkielet) + Faza 2 (Generator Ofert z poprawkami po recenzji, rozdz. 7–9) + Faza 4a (silnik terminów, rozdz. 10); gałąź `faza-3-umowy` dodaje Generator Umów (rozdz. 11). Wspólne konwencje błędów, transakcji i migracji: rozdz. 3–5.
 
 ## 1. Stos
 
@@ -73,6 +73,8 @@ Migracja `0002_oferty_specyfikacja.sql` (Faza 2) dodaje: `ident` w sekcjach/czę
 | 0003 | `0003_silnik_terminow.sql` | Faza 4a | `zadania_kalendarza.klucz`, migawka terminów w `zamowienia_materialow`, ustawienia odstępów |
 | 0004 | `0004_silnik_terminow_poprawki.sql` | Faza 4a | `zlecenia.harmonogram_nieaktualny_powod`, `dziennik_zmian.opis`, indeksy dat |
 | 0005 | `0005_oferty_poprawki.sql` | Faza 2 (poprawki) | `wersja`/`zmieniono` rekordów specyfikacji i wersji oferty, `wersje_oferty.migawka`/`wyslano`, podglądy plików, AGD 23% |
+| 0006 | `0006_umowy.sql` | Faza 3 | `umowy.anulowano` (status „anulowana”), `wersja`, `migawka`, `wyslano`, `data_podpisania`, czasy produkcji, `specyfikacja_pierwotna_id`, `uwagi`; tabela `etapy_umowy`; aneksy: `wersja`, poprzednia wartość/termin, `data_podpisania`; ustawienia `umowa_*` i `firma_bank/rachunek/swift` |
+| 0007 | (zarezerwowana) | UI kalendarza (A7) | – |
 
 Kolejne migracje: `0006_…` itd. Program nie ma jeszcze wdrożeń, więc bazy deweloperskie sprzed integracji należy odtworzyć.
 
@@ -95,6 +97,7 @@ Kody 409: `konflikt` (równoczesna edycja tego samego pola – zmiany częściow
 | `GET /zdarzenia?klucz=` | WebSocket: `{"zasob":"klienci","id":1,"operacja":"zmiana"}`; `zasob:"*"` = odśwież wszystko |
 | `POST /klienci/{id}/przywroc` | cofnięcie usunięcia (miękkiego) klienta |
 | Kalendarz, zlecenia, materiały, czasy dostaw | patrz rozdz. 10 „Silnik terminów” |
+| Umowy, wpłaty, aneksy, szablony dokumentów | patrz rozdz. 11 „Generator Umów” |
 
 Faza 2 (trasy w `crates/robinwood-serwer/src/api_oferty.rs`, dołączone do routera jedną linią w `api.rs`):
 
@@ -120,7 +123,7 @@ Faza 2 (trasy w `crates/robinwood-serwer/src/api_oferty.rs`, dołączone do rout
 | `GET /wersje-oferty/{id}/eksport/{pdf,docx}?zdjecia=0/1` | dokument oferty |
 | `GET /szablony-mebli`, `GET /slowniki-podpowiedzi` | szablony; wszystkie słowniki jednym zapytaniem |
 | `POST /import/slowniki`, `POST /import/szablony-mebli` | import plików użytkownika (JSON w treści) |
-| `GET/PUT /ustawienia/firma` | dane wykonawcy i domyślne wartości oferty |
+| `GET/PUT /ustawienia/firma` | dane wykonawcy (także bank, rachunek, SWIFT – do umów) i domyślne wartości oferty |
 
 Wszystkie zmiany specyfikacji zwracają `{id, specyfikacja}` – całe aktualne drzewo – i rozsyłają zdarzenie `specyfikacje` (+ zasób właściciela: `oferty` / `umowy`, pole `wlasciciel.zasob`).
 
@@ -505,3 +508,168 @@ Kody ostrzeżeń: `brak_widelek`, `nieprawidlowe_widelki`, `do_potwierdzenia`, `
 * Definicja kolizji warsztatu (nakładanie się okresów składania dwóch zleceń, bez uwzględnienia pojemności warsztatu;
   pomijany tylko etap `zakonczone`).
 * Termin rysunków liczony od najwcześniejszej daty planowej wszystkich materiałów, także już zamówionych.
+
+## 11. Generator Umów (Faza 3)
+
+Kod serwera: `umowy.rs` (model, numeracja, formularz, statusy, zlecenie i harmonogram), `platnosci.rs` (czysta
+logika planu A/B, testy), `slownie.rs` (kwoty słownie, testy), `wplaty.rs` (wpłaty, protokół odbioru), `aneksy.rs`,
+`szablon_docx.rs` (silnik szablonów DOCX, testy), `dokument_umowy.rs` (pola dokumentu, szablony przykładowe, PDF),
+`api_umowy.rs` (trasy, dołączone jedną linią w `api.rs`). Migracja `0006_umowy.sql`. Interfejs: `src/moduly/umowy/`,
+typy `src/api/typyUmow.ts`, metody `api.umowy`, `api.aneksy`, `api.szablonyDokumentow` w `src/api/klient.ts`.
+Testy HTTP: `tests/api_umowy.rs` (scenariusz oferta → umowa → podpisanie → zlecenie i zadania → wpłata → aneksy →
+protokół; numeracja równoległa na pliku bazy; szablon użytkownika; autoryzacja).
+
+### 11.1. Umowa i jej cykl życia
+
+* **Z oferty** (`POST /umowy {wersja_oferty_id}`): tylko wersja wysłana lub zaakceptowana (`wersje_oferty.wyslano`),
+  oferta nieodrzucona, klient nieusunięty, wycena bez błędów, bez drugiej (nieanulowanej) umowy z tej wersji.
+  Specyfikacja kopiowana `specyfikacje::kopiuj_specyfikacje_w` (zachowane `ident`, `zrodlo_id`), wartość =
+  `wycena.suma_brutto_gr`, stawka VAT z wersji, klient z oferty, miejsce montażu = inwestycja oferty albo nowa
+  inwestycja z `adres_inwestycji`, `wersja_oferty_id` pamięta źródło. **Od zera** (`{klient_id}`): pusta specyfikacja.
+  Domyślnie: data = dziś, zadatek = `umowa_zadatek_procent` wartości (zaokrąglony do pełnych zł), wariant A,
+  miejscowość, dni na informacje, czasy warsztatu i montażu z ustawień, załączniki 1, 4, 5.
+* **Numer**: `umowa_format_numeru` (domyślnie `{NN}/{RRRR}`; `{N}`, `{NN}`, `{NNN}`, `{RRRR}`, `{RR}`), licznik
+  per rok = `MAX(nr_kolejny)+1` dla roku z daty umowy, liczony w transakcji `BEGIN IMMEDIATE` (równoległe tworzenie
+  na kilku stanowiskach nie daje kolizji – test na pliku bazy). Ręczna zmiana numeru: unikalność bez względu na
+  wielkość liter (422 „zajęty”); jeśli numer pasuje do formatu, rok i numer kolejny są aktualizowane (następna umowa
+  dostaje kolejny numer po nim).
+* **Statusy**: `szkic → wyslana → podpisana → w_realizacji → odebrana → zamknieta` (+ `anulowana` z każdego poza
+  zamkniętą). Dozwolone także: szkic → podpisana, wysłana → szkic (klient prosi o zmiany przed podpisaniem;
+  migawka i plan są wtedy usuwane), odebrana → w realizacji. **Anulowanie** zapisuje `umowy.anulowano` (CHECK
+  kolumny `status` z 0001 nie zawiera „anulowana”, a przebudowa tabeli w transakcji migracji skasowałaby kaskadowo
+  płatności) – API zwraca `status: "anulowana"`, niewykonane zadania wyliczone zlecenia znikają, zlecenie →
+  `zakonczone`.
+* **Wyjście ze szkicu** wymaga kompletu (`braki`: data, miejscowość, termin montażu, adres montażu, stawka VAT, plan
+  płatności zgodny, suma etapów = wartość, gdy zaznaczony załącznik 2) i zapisuje **migawkę stron**
+  (`umowy.migawka`: zamawiający, osoby kontaktowe, wykonawca z bankiem i rachunkiem) oraz plan do
+  `platnosci_planowane` (aktualizacja w miejscu po rodzaju – zadania `platnosc:<id>` zachowują id i wykonanie).
+  Od tej chwili dane i specyfikacja są tylko do odczytu (`powod_blokady`, 422 przy zapisie); wyjątek – pola
+  wewnętrzne `czas_warsztat_dni`, `czas_montazu_dni`, `uwagi` (po podpisaniu ich zmiana aktualizuje zlecenie i
+  przelicza harmonogram). Zmiany po podpisaniu – tylko aneksem.
+* **Podpisanie** (`PUT /umowy/{id}/status {status:"podpisana", data?}`) – w jednej transakcji:
+  `data_podpisania`, `specyfikacja_pierwotna_id`; zlecenie (nowe albo aktualizacja istniejącego: `montaz_od =
+  montaz_do`, czasy, klient, nazwa „numer – klient”); **zamówienia materiałów** z kategorii wierszy specyfikacji
+  (bez „po stronie klienta” i „poza wyceną”; opis „Ze specyfikacji umowy: materiały…”; przy kolejnych
+  synchronizacjach usuwane są tylko niezamówione materiały dodane automatycznie); **termin potwierdzenia** wierszy
+  „do potwierdzenia” = data podpisania + `dni_na_brakujace_informacje` (dni kalendarzowe; tylko puste terminy);
+  **harmonogram** – `terminarz::generuj_w_transakcji` (punkt zapisu; błąd danych → znacznik
+  `harmonogram_nieaktualny`, podpisanie i tak się udaje). Odpowiedź zawiera `harmonogram {zlecenie_id, wygenerowano,
+  powod, dodane, zmienione, materialy_dodane}`.
+* **Protokół odbioru** (`POST /umowy/{id}/protokol {data, uwagi?, bez_zastrzezen}`): jeden na umowę (kolejny zapis
+  poprawia), status → `odebrana`, zlecenie → etap `odbior`, termin pozostałości wariantu B liczony od daty odbioru,
+  jawne przeliczenie harmonogramu. Zamknięcie → zlecenie `zakonczone`.
+
+### 11.2. Płatności (ZAŁOŻENIE do potwierdzenia przez użytkownika – liczby dni w *Umowy → Ustawienia*)
+
+| Wariant | Raty |
+| --- | --- |
+| A | zadatek (termin: data umowy + `umowa_termin_zadatku_dni` dni kalendarzowych, dzień wolny → następny roboczy, albo data wpisana w umowie) + **pozostała część** najpóźniej `umowa_wariant_a_dni_przed_montazem` (3) dni roboczych przed rozpoczęciem montażu |
+| B | zadatek + **kwota przed montażem** (najpóźniej `umowa_wariant_b_dni_przed_montazem` dni roboczych przed montażem) + **pozostałość** w terminie `umowa_wariant_b_dni_po_odbiorze` (3) dni roboczych od prawidłowego oddania; po zadatku i kwocie przed montażem musi zostać kwota > 0 (inaczej błąd) |
+
+Dni robocze liczone zawsze w trybie roboczym (`KalendarzDni`, święta + dni wolne użytkownika), niezależnie od
+`liczenie_dni` kalendarza produkcji. Przed odbiorem termin pozostałości B jest **szacunkowy** (od planowanego końca
+montażu, `szacunkowy: true`). Suma rat = wartość (pozycja końcowa domyka sumę); zadatek > wartość, brak wariantu,
+B bez kwoty przed montażem → `plan.bledy` (blokują wyjście ze szkicu). **Saldo**: wpłaty pokrywają raty po kolei;
+rata po terminie (względem dziś) niepokryta = zaległość; `nastepna` = najbliższa niezapłacona rata (termin płatności
+w protokole). Wpłata pokrywająca ratę oznacza zadanie kalendarza `platnosc:<id>` jako wykonane (usunięcie wpłaty
+cofa). Wpłata ujemna = zwrot. Harmonogram etapowy (`PUT /umowy/{id}/etapy`) – lista etapów z terminem i kwotą,
+`kontrola_etapow {suma_gr, roznica_gr, zgodna}`.
+
+**VAT (§9)**: rodzaj nieruchomości `lokal_mieszkalny` / `dom_jednorodzinny` / `inny`, powierzchnia m², podstawa.
+Ostrzeżenia (nie błędy): stawka 8% bez oświadczenia, 8% dla „inny”, powierzchnia > 150 m² (lokal) / > 300 m² (dom).
+
+### 11.3. Aneksy
+
+`POST /umowy/{id}/aneksy` – do umowy podpisanej / w realizacji / odebranej, gdy nie ma innego niepodpisanego
+aneksu; numer kolejny w umowie; specyfikacja = kopia **obowiązującej** (`umowy.specyfikacja_id`), zapamiętane
+`poprzednia_wartosc_gr`, `poprzedni_termin_montazu`. `PUT /aneksy/{id}` – zmiana częściowa (`data`, `opis_zmian`,
+`zmiana_ceny_gr` ±, `nowy_termin_montazu`; `poprzednie` → 409). `GET /aneksy/{id}` zwraca `roznice` (specyfikacja
+aneksu względem źródłowej) i `lista_zmian` (opis, wynagrodzenie, termin, różnice specyfikacji) – aneks bez zmian nie
+może wyjść ze szkicu. Statusy `szkic → wyslany → podpisany` (wysłany → szkic dozwolone). **Podpisanie**: wartość
+umowy += zmiana, `montaz_do` = nowy termin, `umowy.specyfikacja_id` = specyfikacja aneksu (od tej chwili obowiązuje;
+właściciel `umowa` blokuje ją do odczytu), plan płatności przeliczony i zapisany, zlecenie zaktualizowane, materiały
+zsynchronizowane, harmonogram przeliczony – jedna transakcja. Usunąć można aneks niepodpisany.
+
+### 11.4. Dokumenty: szablony DOCX użytkownika
+
+* Szablon wgrywa użytkownik (*Umowy → Ustawienia i szablony*, `PUT /szablony-dokumentow/{umowa|aneks}` – surowe
+  bajty pliku, `?nazwa=`); plik leży w `<folder danych>/szablony-dokumentow/<rodzaj>.docx` (+ `.json` z nazwą i
+  datą), zapis atomowy, plik jest sprawdzany przed zapisem (422 dla nie-DOCX). **Nic z szablonu nie trafia do
+  repozytorium.** Bez wgranego szablonu używany jest wbudowany, fikcyjny szablon przykładowy (generowany w kodzie,
+  napis „SZABLON PRZYKŁADOWY” w treści, nagłówku i stopce); `GET /szablony-dokumentow/{rodzaj}/plik` pobiera obecny.
+* **Silnik** (`szablon_docx::wypelnij`): części `word/document.xml`, `header*.xml`, `footer*.xml`, `footnotes`,
+  `endnotes`. Kolejno: (0) **kontrolki treści** Worda (`w:sdt`) z `w:alias` lub `w:tag` odpowiadającym polu (także
+  znaczniki z dotychczasowego wzorca: `number`, `client`, `total`, `payment_schedule`…) są zastępowane wartością –
+  znika też `w:dataBinding`, który przy otwarciu w Wordzie przywróciłby treść szablonu; (1) **scalenie pól rozbitych**
+  przez Worda na kilka `w:r`/`w:t` w obrębie akapitu do pierwszego fragmentu (jego formatowanie zostaje); (2) **bloki
+  warunkowe** `[[nazwa]] … [[/nazwa]]` – akapity od znacznika do znacznika usuwane, gdy warunek fałszywy (sprawdzenie
+  zrównoważenia tabel/komórek – inaczej ostrzeżenie i usunięcie samych znaczników); nieznany blok → treść zostaje +
+  ostrzeżenie; (3) **pola blokowe** (`[specyfikacja]`, `[harmonogram płatności]`, `[harmonogram etapów]`, `[lista
+  zmian]`) – akapit z samym polem zastępowany tabelą/akapitami (wcięcie akapitu przenoszone na tabelę, w komórce
+  tabeli dodawany akapit końcowy, ustawienia sekcji z akapitu zachowane); (4) **pola tekstowe** – escapowanie XML,
+  `\n` → `w:br`, puste wartości → „………………”. Nazwy pól: bez wielkości liter, polskich znaków i wielokrotnych spacji.
+  **Nieznane pola zostają bez zmian i trafiają do raportu** (`nieznane`), nie są błędem; `[uzupełnij]` jest celowo
+  pomijane (`do_uzupelnienia`). Nawiasy w danych wstawianych przez program są kodowane (`&#91;`), więc nie są brane za
+  pola. `.docm`: typ części głównej → `.docx`, usunięte `vbaProject.bin`, `vbaData.xml`, `customUI/` i ich
+  powiązania.
+* **Pola** – jedna lista `dokument_umowy::POLA` (`GET /szablony-dokumentow/pola`, tabela w programie i w
+  `docs/SZABLON_UMOWY.md`). Kwoty bez „zł” („48 352,00”), słownie „… złote 00/100”, daty DD.MM.RRRR, pola wyboru
+  VAT/odbioru jako ☒/☐. Warunki: `załącznik 1…6` (z `umowy.zalaczniki`), `wariant A/B`, `stawka 8/23`.
+* `GET /umowy/{id}/dokument/pola` (i `/aneksy/{id}/dokument/pola`) – podgląd przed generowaniem: pola znalezione w
+  szablonie z wartościami, puste, nieznane, ostrzeżenia. `GET …/dokument/{docx|pdf}`. **Protokół odbioru**:
+  `GET /umowy/{id}/protokol/{docx|pdf}` – z szablonu umowy wycinany jest tylko blok `[[załącznik 5]]…[[/załącznik 5]]`
+  (z zachowaniem ustawień strony); brak bloku → 422 z instrukcją.
+* **Dane w dokumencie**: po wyjściu ze szkicu strony z migawki; nigdy koszt własny, marża, czasy produkcji ani uwagi
+  wewnętrzne (test w `tests/api_umowy.rs`).
+* **PDF – decyzja**: PDF powstaje z gotowego DOCX przez program zgodny z Wordem na komputerze-serwerze – Windows:
+  Microsoft Word (PowerShell + COM, `ExportAsFixedFormat`), potem LibreOffice (`soffice --headless --convert-to pdf`,
+  ścieżka może być w `ROBINWOOD_SOFFICE`). Brak obu → 422 z instrukcją „zapisz DOCX jako PDF w Wordzie”. Uzasadnienie:
+  tylko edytor tekstu wiernie odtworzy układ szablonu użytkownika (style, numeracja, nagłówki, podziały stron);
+  własny generator (jak w ofertach) wymagałby utrzymywania drugiej kopii umowy w kodzie. Ścieżka Word nie była
+  testowana automatycznie (brak Windows w CI); LibreOffice – testowane.
+
+### 11.5. API (prefiks `/api/v1`, klucz jak w rozdz. 2; błędy `{"blad"}` jak w rozdz. 4)
+
+| Metoda i ścieżka | Opis |
+| --- | --- |
+| `GET /umowy?status=&klient_id=&rok=&szukaj=&limit=&od=` | lista: numer, klient, wartość, `wplacono_gr`, `saldo_gr`, termin montażu, status, numer oferty |
+| `POST /umowy` | `{wersja_oferty_id}` albo `{klient_id}`, opcjonalnie `data_zawarcia` → 201 `PelnaUmowa` |
+| `GET /umowy/{id}` | `PelnaUmowa {umowa, specyfikacja, plan, platnosci, wplaty, saldo, etapy, kontrola_etapow, aneksy, protokol, zlecenie, ostrzezenia, braki}` |
+| `PUT /umowy/{id}` | zmiana częściowa pól `DaneUmowy` (+ `poprzednie` → 409 `konflikt`); nieznane pole → 422; poza szkicem tylko pola wewnętrzne |
+| `DELETE /umowy/{id}` | tylko szkic bez wpłat → 204 |
+| `PUT /umowy/{id}/status` | `{status, data?, powod?}` → `PelnaUmowa` + `harmonogram` |
+| `PUT /umowy/{id}/etapy` | `{etapy: [{nazwa, termin?, kwota_gr}]}` (szkic) |
+| `GET /umowy/{id}/roznice` | `{zrodlo, roznice}` – specyfikacja umowy (pierwotna) względem wersji oferty |
+| `POST /umowy/{id}/wplaty`, `DELETE /wplaty/{id}` | `{data, kwota_gr, sposob?: przelew/gotowka/karta/inny, uwagi?, platnosc_planowana_id?}`; od wysłania umowy |
+| `POST /umowy/{id}/protokol` | `{data, uwagi?, bez_zastrzezen}` |
+| `GET /umowy/{id}/dokument/pola`, `GET /umowy/{id}/dokument/{docx\|pdf}`, `GET /umowy/{id}/protokol/{docx\|pdf}` | dokumenty |
+| `POST /umowy/{id}/aneksy`; `GET/PUT/DELETE /aneksy/{id}`; `PUT /aneksy/{id}/status`; `GET /aneksy/{id}/dokument/pola\|docx\|pdf` | aneksy |
+| `GET/PUT /ustawienia/umowy` | `UstawieniaUmow` (format numeru, miejscowość, dni, zadatek %, warianty, czasy) |
+| `GET /szablony-dokumentow`, `GET /szablony-dokumentow/pola`, `GET/PUT/DELETE /szablony-dokumentow/{rodzaj}`, `GET /szablony-dokumentow/{rodzaj}/plik` | szablony (PUT: bajty, limit 50 MB) |
+| `GET/PUT /klienci/{id}/osoby` | osoby kontaktowe klienta (`{osoby: [...]}` zastępuje listę) |
+
+Zdarzenia WebSocket: `umowy` (id umowy), `specyfikacje`, a po zmianach dotykających kalendarza – `zlecenia`,
+`zadania_kalendarza` (id zlecenia), `zamowienia_materialow`; `szablony_dokumentow`.
+
+### 11.6. Interfejs
+
+*Umowy*: lista (filtry status / klient / rok, szukaj, suma do zapłaty), „Nowa umowa” (z oferty wysłanej /
+zaakceptowanej albo od zera), ekran umowy z zakładkami **Umowa** (skrócona forma w grupach: Umowa, Klient – z bazy
+albo nowy, osoby kontaktowe; Miejsce montażu; Terminy; Pieniądze – wariant A/B i podgląd rat z kontrolą sumy; VAT z
+ostrzeżeniami; Załączniki z edytorem etapów; Produkcja – wewnętrznie, z informacją o zleceniu), **Specyfikacja**
+(wspólny `EdytorSpecyfikacji` + panel różnic względem oferty; akcja blokady „Utwórz aneks”), **Płatności i wpłaty**
+(saldo, raty, wpłaty, protokół odbioru z DOCX/PDF), **Aneksy**. Okno **Dokument** pokazuje pola szablonu z wartościami
+przed pobraniem DOCX/PDF. Ekran aneksu: Warunki i lista zmian / Specyfikacja. *Umowy → Ustawienia i szablony*:
+ustawienia, karty szablonów z raportem pól, instrukcja i tabela pól. Przycisk „Utwórz umowę” w ofercie (aktywny dla
+wersji wysłanej). Pola zapisują się przy opuszczeniu (zmiany częściowe, `useFormularz` z rejestrem szkiców).
+Zrzuty sprawdzone przy 1920×1080, 1536×864 (125%) i 1366×768.
+
+### 11.7. Do decyzji użytkownika
+
+* Warianty płatności A/B i liczby dni (11.2) – założenie z opisu wzorca, konfigurowalne.
+* Format numeru `NN/RRRR` (rok z daty umowy) – konfigurowalny.
+* PDF przez Word/LibreOffice na serwerze (11.4).
+* Termin „brakujących informacji”: termin potwierdzenia wierszy liczymy w dniach kalendarzowych (jak w umowie), a
+  zadanie kalendarza `brakujace_informacje` liczy silnik terminów wg ustawienia `liczenie_dni` (domyślnie robocze) –
+  przy trybie roboczym daty się różnią; do ujednolicenia w silniku (rozdz. 10.1).
+* Zadatek domyślnie 30% wartości (podpowiedź), zaokrąglany do pełnych złotych.
