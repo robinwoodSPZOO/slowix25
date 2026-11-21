@@ -13,6 +13,7 @@ pub mod eksport;
 pub mod firma;
 pub mod formaty;
 pub mod kalendarz;
+pub mod kalendarz_ui;
 pub mod klienci;
 pub mod limity;
 pub mod mdns;
