@@ -49,6 +49,17 @@ fn folder(n: &str) -> std::path::PathBuf {
     ))
 }
 
+type KluczObcy = (
+    i64,
+    i64,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    String,
+);
+
 /// Wszystkie migracje (0001–000N) przechodzą na pustej bazie, numeracja jest rosnąca
 /// i jednoznaczna, a schemat jest spójny (klucze obce, integralność).
 #[tokio::test]
@@ -86,16 +97,7 @@ async fn migracje_na_pustej_bazie_i_spojny_schemat() {
     .await
     .unwrap();
     for t in &tabele {
-        let fks: Vec<(
-            i64,
-            i64,
-            String,
-            String,
-            Option<String>,
-            String,
-            String,
-            String,
-        )> = sqlx::query_as(&format!("PRAGMA foreign_key_list('{t}')"))
+        let fks: Vec<KluczObcy> = sqlx::query_as(&format!("PRAGMA foreign_key_list('{t}')"))
             .fetch_all(&pula)
             .await
             .unwrap();
