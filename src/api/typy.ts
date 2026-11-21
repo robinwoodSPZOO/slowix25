@@ -446,3 +446,313 @@ export interface CzasDostawy {
   dni_max: number;
   dni_srednia_rzeczywista: number | null;
 }
+
+// ---------------------------------------------------------------------------
+// Kalendarz – interfejs (Faza 4b): pełny kontrakt silnika terminów (docs/ARCHITEKTURA.md, rozdz. 10.4)
+// ---------------------------------------------------------------------------
+
+export type StanOstrzezenia = "wykonane" | "spokojnie" | "zolty" | "pomaranczowy" | "czerwony";
+export type LiczenieDni = "robocze" | "kalendarzowe";
+export type EtapZlecenia =
+  | "oferta"
+  | "umowa"
+  | "pomiar"
+  | "rysunki"
+  | "zamowienia"
+  | "warsztat"
+  | "montaz"
+  | "odbior"
+  | "gwarancja"
+  | "zakonczone";
+
+export interface StanZadania {
+  stan: StanOstrzezenia;
+  opis: string;
+  dni_do_terminu: number | null;
+  przesuniecie_montazu_dni: number | null;
+  nowy_termin_montazu: string | null;
+}
+
+export interface InfoZamowienia {
+  kategoria_id: number;
+  kategoria_nazwa: string;
+  dostawca_id: number | null;
+  dostawca_nazwa: string | null;
+  opis: string | null;
+  status: "do_zamowienia" | "zamowione" | "dostarczone" | string;
+  data_wymaganej_dostawy: string | null;
+  dni_min: number | null;
+  dni_max: number | null;
+  dni_srednia: number | null;
+  data_zamowienia: string | null;
+  data_dostawy: string | null;
+  oczekiwana_dostawa: string | null;
+  dostawa_zagrozona: boolean;
+  zablokowane: boolean;
+  potwierdzic_do: string | null;
+  wiersze_do_potwierdzenia: number[];
+}
+
+export interface ZadanieKalendarza {
+  id: number;
+  zlecenie_id: number | null;
+  zlecenie_nazwa: string | null;
+  zamowienie_id: number | null;
+  typ: string;
+  klucz: string | null;
+  tytul: string;
+  data_od: string;
+  data_do: string | null;
+  data_sweet_spot: string | null;
+  data_planowa: string | null;
+  data_krytyczna: string | null;
+  termin: string;
+  wyliczone: boolean;
+  wykonano: string | null;
+  uwagi: string | null;
+  stan: StanZadania;
+  zamowienie: InfoZamowienia | null;
+  harmonogram_nieaktualny: boolean;
+  harmonogram_nieaktualny_powod: string | null;
+}
+
+export interface Zlecenie {
+  id: number;
+  klient_id: number;
+  umowa_id: number | null;
+  nazwa: string;
+  etap: EtapZlecenia;
+  montaz_od: string | null;
+  czas_warsztat_dni: number | null;
+  czas_montazu_dni: number | null;
+  odstep_materialy_dni: number | null;
+  odstep_rysunki_dni: number | null;
+  odstep_pomiar_dni: number | null;
+  utworzono: string;
+  harmonogram_nieaktualny: boolean;
+  harmonogram_nieaktualny_powod: string | null;
+  /** Tylko w odpowiedzi PUT /zlecenia/{id} i POST …/przelicz. */
+  harmonogram_przeliczony?: boolean;
+}
+
+export interface DaneZlecenia {
+  klient_id: number;
+  umowa_id?: number | null;
+  nazwa: string;
+  etap?: EtapZlecenia | null;
+  montaz_od?: string | null;
+  czas_warsztat_dni?: number | null;
+  czas_montazu_dni?: number | null;
+  odstep_materialy_dni?: number | null;
+  odstep_rysunki_dni?: number | null;
+  odstep_pomiar_dni?: number | null;
+}
+
+export interface MaterialZlecenia {
+  id: number;
+  zlecenie_id: number;
+  kategoria_id: number;
+  kategoria_nazwa: string;
+  dostawca_id: number | null;
+  dostawca_efektywny_id: number | null;
+  dostawca_nazwa: string | null;
+  opis: string | null;
+  status: string;
+  data_wymaganej_dostawy: string | null;
+  data_sweet_spot: string | null;
+  data_planowa: string | null;
+  data_krytyczna: string | null;
+  dni_min: number | null;
+  dni_max: number | null;
+  dni_srednia: number | null;
+  data_zamowienia: string | null;
+  data_dostawy: string | null;
+}
+
+export interface TerminyMaterialu {
+  material_id: number;
+  kategoria_id: number;
+  kategoria_nazwa: string;
+  dostawca_id: number | null;
+  widelki: { min: number; max: number } | null;
+  dni_srednia: number | null;
+  zrodlo_widelek: "kategoria_dostawca" | "kategoria" | "brak";
+  data_wymaganej_dostawy: string;
+  data_sweet_spot: string | null;
+  data_planowa: string | null;
+  data_krytyczna: string | null;
+  zablokowane: boolean;
+  potwierdzic_do: string | null;
+  zamowione: boolean;
+}
+
+export interface OstrzezenieHarmonogramu {
+  kod: string;
+  komunikat: string;
+  material_id: number | null;
+}
+
+export interface Harmonogram {
+  zlecenie_id: number;
+  liczenie_dni: LiczenieDni;
+  montaz_od: string;
+  montaz_do: string;
+  warsztat_od: string | null;
+  warsztat_do: string | null;
+  data_wymaganej_dostawy: string;
+  rysunki_do: string;
+  pomiar_do: string;
+  materialy: TerminyMaterialu[];
+  ostrzezenia: OstrzezenieHarmonogramu[];
+}
+
+export interface WynikGenerowania {
+  harmonogram: Harmonogram;
+  dodane: number;
+  zmienione: number;
+  usuniete: number;
+  zamrozone: number;
+  zadania_zapisane: ZadanieKalendarza[];
+}
+
+export interface NieaktualnyHarmonogram {
+  zlecenie_id: number;
+  zlecenie_nazwa: string;
+  powod: string;
+}
+
+export interface WynikPrzeliczenia {
+  przeliczone_zlecenia: number[];
+  nieprzeliczone_zlecenia: NieaktualnyHarmonogram[];
+}
+
+export interface Tydzien {
+  od: string;
+  do: string;
+  dzis: string;
+  zadania: ZadanieKalendarza[];
+  nieaktualne_harmonogramy: NieaktualnyHarmonogram[];
+}
+
+export interface GrupaDostawcy {
+  dostawca_id: number | null;
+  dostawca_nazwa: string | null;
+  stan: StanOstrzezenia;
+  pozycje: ZadanieKalendarza[];
+}
+
+export interface DoZamowienia {
+  dzis: string;
+  grupy: GrupaDostawcy[];
+  bez_terminow: MaterialZlecenia[];
+  nieaktualne_harmonogramy: NieaktualnyHarmonogram[];
+}
+
+export interface KolizjaZlecen {
+  typ: string;
+  zlecenie_a: number;
+  zlecenie_b: number;
+  od: string;
+  do: string;
+  zlecenie_a_nazwa: string;
+  zlecenie_b_nazwa: string;
+  harmonogram_nieaktualny: boolean;
+}
+
+export interface StatystykaPary {
+  kategoria_id: number;
+  kategoria_nazwa: string;
+  dostawca_id: number | null;
+  dostawca_nazwa: string | null;
+  liczenie_dni: LiczenieDni;
+  aktualne_widelki: { min: number; max: number } | null;
+  zrodlo_widelek: "kategoria_dostawca" | "kategoria" | "brak";
+  statystyka: { liczba: number; min: number; max: number; srednia: number; sugerowane_widelki: { min: number; max: number } };
+  sugerowana_korekta: boolean;
+}
+
+export interface UstawieniaTerminow {
+  liczenie_dni: LiczenieDni;
+  odstep_materialy_dni: number;
+  odstep_rysunki_dni: number;
+  odstep_pomiar_dni: number;
+  prog_pomaranczowy_dni: number;
+  prog_zbliza_sie_dni: number;
+  odstep_potwierdzenie_montazu_dni: number;
+  odstep_pomieszczenie_gotowe_dni: number;
+}
+
+export type RodzajDniaWolnego = "swieto" | "urlop" | "przerwa_dostawcow" | "inne";
+
+export interface DzienWolny {
+  data: string;
+  rodzaj: RodzajDniaWolnego;
+  opis: string | null;
+}
+
+export interface Swieto {
+  data: string;
+  nazwa: string;
+}
+
+export interface Dostawca {
+  id: number;
+  nazwa: string;
+  email: string | null;
+  telefon: string | null;
+  uwagi: string | null;
+  aktywny: boolean;
+}
+
+export interface DaneDostawcy {
+  nazwa: string;
+  email?: string | null;
+  telefon?: string | null;
+  uwagi?: string | null;
+  aktywny?: boolean;
+}
+
+export interface Wykonanie {
+  wykonano: string | null;
+  data_zamowienia?: string | null;
+  data_dostawy?: string | null;
+  uwagi?: string | null;
+  mimo_blokady?: boolean;
+}
+
+export interface DaneZadaniaRecznego {
+  zlecenie_id?: number | null;
+  typ: string;
+  tytul: string;
+  data_od: string;
+  data_do?: string | null;
+  uwagi?: string | null;
+}
+
+export interface WierszImportuKategorii {
+  wiersz: number;
+  kategoria: string;
+  przykladowe_materialy: string | null;
+  dostawca: string | null;
+  czas_dostawy_min_dni: number | null;
+  czas_dostawy_max_dni: number | null;
+}
+
+export interface RaportImportuKategorii extends WynikPrzeliczenia {
+  kategorie_dodane: number;
+  kategorie_zaktualizowane: number;
+  dostawcy_dodani: number;
+  czasy_dostaw_ustawione: number;
+  bez_czasu_dostawy: number[];
+  pominiete: { wiersz: number; powod: string }[];
+}
+
+export interface OpisWierszaSpecyfikacji {
+  id: number;
+  sekcja: string;
+  czesc: string;
+  rodzaj: string | null;
+  material: string | null;
+  opis: string | null;
+  status: string;
+}

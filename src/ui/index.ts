@@ -6,3 +6,5 @@ export { WierszTabeli } from "./WierszTabeli";
 export { ElementDrzewa } from "./ElementDrzewa";
 export { Segment, type OpcjaSegmentu } from "./Segment";
 export { Okno } from "./Okno";
+export { GranicaBledow } from "./GranicaBledow";
+export { PoleDaty, poprawnaDataIso, parsujDatePolska, formatPolski, type PoleDatyProps } from "./PoleDaty";

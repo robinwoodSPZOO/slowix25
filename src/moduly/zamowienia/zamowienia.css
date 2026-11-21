@@ -1,0 +1,33 @@
+/* Moduł Zamówienia (Faza 4b). */
+.zamowienia { display: flex; flex-direction: column; gap: var(--o-12); }
+.zamowienia__uklad { display: flex; gap: var(--o-12); align-items: flex-start; }
+.zamowienia__lista { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--o-12); }
+.zamowienia .panel-zadania { position: sticky; top: 0; max-height: calc(100vh - 140px); }
+.grupa-dostawcy__naglowek { display: flex; align-items: center; gap: var(--o-12); padding: var(--o-8) var(--o-12); border-bottom: 1px solid var(--linia); background: var(--tlo-powierzchni-2); }
+.grupa-dostawcy__naglowek h2 { margin: 0; font-size: var(--rozmiar-h3); }
+.grupa-dostawcy__naglowek .status { margin-left: auto; }
+.tabela-zamowien td { vertical-align: top; }
+.tabela-zamowien td:first-child { border-left: 3px solid var(--kolor, transparent); }
+.kolumna-stanu { min-width: 130px; }
+.nowy-termin { display: inline-flex; align-items: center; gap: 3px; font-size: var(--rozmiar-mikro); color: var(--stan-czerwony); font-weight: var(--waga-pogrubiona); }
+.znak-blokady { display: inline-flex; align-items: center; gap: 3px; font-size: var(--rozmiar-mikro); color: var(--stan-zolty); font-weight: var(--waga-srednia); }
+.filtr-stanow { display: flex; flex-wrap: wrap; gap: var(--o-4); }
+.filtr-stanow__opcja { height: 26px; padding: 0 var(--o-12); border: 1px solid var(--linia-mocna); border-radius: var(--r-12); background: var(--tlo-powierzchni); font: inherit; font-size: var(--rozmiar-etykieta); cursor: pointer; color: var(--tekst-drugorzedny); }
+.filtr-stanow__opcja[aria-pressed="true"] { background: var(--akcent); border-color: var(--akcent); color: var(--tekst-na-akcencie); }
+.filtr-stanow__opcja:focus-visible { outline: none; box-shadow: var(--fokus); }
+.lista-bez-terminow { margin: var(--o-8) var(--o-12); padding-left: var(--o-16); font-size: var(--rozmiar-tabela); }
+.grupa-dostawcy .pole__pomoc { margin: 0 var(--o-12) var(--o-12); }
+.tabela-zamowien { table-layout: fixed; }
+.tabela-zamowien th { white-space: normal; line-height: 1.2; }
+.tabela-zamowien th:nth-child(1) { width: 20%; min-width: 120px; }
+.tabela-zamowien th:nth-child(2) { width: auto; }
+.tabela-zamowien th.kol-daty { width: 92px; }
+.zamowienia--z-panelem .tabela-zamowien th.kol-daty { width: 84px; }
+.zamowienia--z-panelem .tabela-zamowien { font-size: var(--rozmiar-etykieta); }
+.tabela-zamowien th.kol-stanu { width: 150px; }
+.zamowienia--z-panelem .tabela-zamowien th.kol-stanu { width: 120px; }
+.tabela-zamowien th.kol-akcji { width: 210px; }
+.tabela-zamowien td { overflow-wrap: anywhere; }
+.zamowienia .tabela a, .panel-zadania a { color: var(--akcent); }
+.zamowienia--z-panelem .tabela-zamowien th.kol-akcji { width: 140px; }
+.zamowienia--z-panelem .tabela-zamowien .akcje-wiersza { flex-direction: column; align-items: flex-start; }

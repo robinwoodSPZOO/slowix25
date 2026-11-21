@@ -39,6 +39,7 @@ h3 { font-size: var(--rozmiar-h3); font-weight: var(--waga-pogrubiona); }
 .menu .stan { margin-top: auto; padding: var(--o-12); font-size: var(--rozmiar-mikro); color: #9a978f; }
 .tresc { flex: 1; min-width: 0; padding: var(--o-20) var(--o-24); overflow: auto; }
 .tresc--pelna { padding: 0; overflow: hidden; }
+.pasek-przerwy { position: sticky; top: calc(-1 * var(--o-20)); z-index: 20; display: flex; align-items: center; gap: var(--o-6); margin: calc(-1 * var(--o-20)) calc(-1 * var(--o-24)) var(--o-12); padding: var(--o-6) var(--o-24); background: var(--stan-zolty-tlo); color: var(--tekst); font-size: 13px; border-bottom: 1px solid var(--stan-zolty); }
 
 /* --- Elementy wspólne z Fazy 0 (klienci, ustawienia) --- */
 .komunikat { max-width: 560px; }
@@ -53,5 +54,4 @@ button { font: inherit; cursor: pointer; }
 .pasek { display: flex; gap: var(--o-8); align-items: center; margin-bottom: var(--o-12); }
 .legenda { display: flex; flex-wrap: wrap; gap: var(--o-12); }
 .legenda span::before { content: ""; display: inline-block; width: 12px; height: 12px; margin-right: 6px; background: var(--kolor); vertical-align: -1px; }
-.widzet { padding: var(--o-12); background: var(--tlo-powierzchni); height: 100vh; border: 1px solid var(--linia); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

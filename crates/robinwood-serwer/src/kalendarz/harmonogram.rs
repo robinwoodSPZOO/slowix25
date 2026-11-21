@@ -284,7 +284,10 @@ pub fn policz_z_kalendarzem(
     if !kal.czy_roboczy(montaz_od) {
         ostrzezenia.push(Ostrzezenie {
             kod: "montaz_w_dzien_wolny",
-            komunikat: format!("Termin rozpoczęcia montażu {montaz_od} wypada w dzień wolny"),
+            komunikat: format!(
+                "Termin rozpoczęcia montażu {} wypada w dzień wolny",
+                super::data_pl(montaz_od)
+            ),
             material_id: None,
         });
     }
@@ -369,11 +372,11 @@ pub fn policz_z_kalendarzem(
             ostrzezenia.push(Ostrzezenie {
                 kod: "do_potwierdzenia",
                 komunikat: format!(
-                    "{}: {} poz. specyfikacji do potwierdzenia przez klienta blokuje zamówienie{}",
+                    "{}: pozycje specyfikacji do potwierdzenia przez klienta ({}) blokują zamówienie{}",
                     m.kategoria_nazwa,
                     m.wiersze_do_potwierdzenia,
                     potwierdzic_do
-                        .map(|d| format!(" (potwierdzić do {d})"))
+                        .map(|d| format!(" (potwierdzić do {})", super::data_pl(d)))
                         .unwrap_or_default()
                 ),
                 material_id: Some(m.id),
@@ -503,7 +506,9 @@ pub fn policz_z_kalendarzem(
             ostrzezenia.push(Ostrzezenie {
                 kod: "harmonogram_przed_umowa",
                 komunikat: format!(
-                    "Termin pomiaru ({pomiar_do}) wypada przed datą umowy ({data_umowy}) – termin montażu może być nierealny"
+                    "Termin pomiaru ({}) wypada przed datą umowy ({}) – termin montażu może być nierealny",
+                    super::data_pl(pomiar_do),
+                    super::data_pl(data_umowy)
                 ),
                 material_id: None,
             });

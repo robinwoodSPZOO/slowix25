@@ -113,3 +113,38 @@ export async function obsluzZamykanieOkna(oproznij: () => Promise<void>): Promis
     await invoke("zakoncz_aplikacje");
   });
 }
+
+// --- Kalendarz (Faza 4b): widżet, powiadomienia, przejście do zadania ---
+
+/** Powiadomienie systemowe Windows (Tauri). Poza Tauri – powiadomienie przeglądarki, jeśli dozwolone. */
+export async function pokazPowiadomienie(tytul: string, tresc: string): Promise<void> {
+  if (wTauri()) {
+    await invoke("pokaz_powiadomienie", { tytul, tresc });
+    return;
+  }
+  if (typeof Notification !== "undefined" && Notification.permission === "granted") new Notification(tytul, { body: tresc });
+}
+
+/**
+ * Pokazuje główne okno i przechodzi pod podaną ścieżkę (np. `/kalendarz?zadanie=5`).
+ * Poza Tauri (widżet w przeglądarce) – otwiera ścieżkę w nowej karcie.
+ */
+export async function otworzWGlownymOknie(sciezka: string): Promise<void> {
+  if (wTauri()) {
+    await invoke("otworz_sciezke", { sciezka });
+    return;
+  }
+  window.open(`${window.location.pathname}#${sciezka}`, "_blank");
+}
+
+/** Okno główne: nasłuch próśb o przejście pod ścieżkę (z widżetu). Zwraca funkcję kończącą. */
+export async function nasluchujNawigacji(przejdz: (sciezka: string) => void): Promise<() => void> {
+  if (!wTauri()) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<string>("robinwood://przejdz", (e) => przejdz(e.payload));
+}
+
+/** Chowa widżet (przywrócenie: menu zasobnika „Pokaż / ukryj widżet” albo Ustawienia). */
+export async function ukryjWidzet(): Promise<void> {
+  if (wTauri()) await invoke("ukryj_widzet");
+}

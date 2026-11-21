@@ -1,0 +1,46 @@
+/* Okno-widżet (Faza 4b). Okno Tauri ma ok. 360×520 px i nie ma ramki. */
+body.cialo-widzetu { min-width: 0; background: transparent; overflow: hidden; }
+.widzet {
+  height: 100vh; display: flex; flex-direction: column; gap: var(--o-6);
+  padding: 0; background: var(--tlo-powierzchni); border: 1px solid var(--linia-mocna); border-radius: 0;
+  overflow: hidden; font-size: var(--rozmiar-etykieta);
+}
+.widzet__naglowek { display: flex; align-items: center; gap: var(--o-4); padding: var(--o-8) var(--o-8) var(--o-6) var(--o-12); background: var(--tlo-paska); color: var(--tekst-paska); cursor: move; user-select: none; }
+.widzet__tytul { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.widzet__tytul strong { letter-spacing: 0.16em; color: var(--tekst-paska-aktywny); font-size: var(--rozmiar-etykieta); }
+.widzet__tytul span { font-size: var(--rozmiar-mikro); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.widzet__polaczenie { display: inline-flex; color: #8fd1b4; padding: 0 var(--o-4); }
+.widzet__polaczenie--brak { color: #f2a99f; }
+.widzet__przycisk { display: inline-grid; place-items: center; width: 26px; height: 26px; border: 0; border-radius: var(--r-4); background: transparent; color: var(--tekst-paska); cursor: pointer; }
+.widzet__przycisk:hover { background: var(--tlo-paska-aktywne); color: #fff; }
+.widzet__przycisk:focus-visible, .widzet__otworz:focus-visible { outline: none; box-shadow: var(--fokus); }
+.widzet__liczniki { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--o-4); padding: 0 var(--o-8); }
+.widzet__licznik { display: flex; align-items: center; gap: 4px; padding: 3px 6px; border-radius: var(--r-6); font-size: var(--rozmiar-mikro); }
+.widzet__licznik strong { font-size: 15px; }
+.widzet__offline { display: flex; gap: var(--o-6); align-items: flex-start; margin: 0 var(--o-8); padding: var(--o-6) var(--o-8); border-radius: var(--r-6); background: var(--stan-zolty-tlo); color: var(--stan-zolty); font-size: var(--rozmiar-mikro); }
+.widzet__offline svg { flex: none; margin-top: 1px; }
+.widzet--offline .widzet__lista { opacity: 0.85; }
+.widzet__lista { flex: 1; min-height: 0; overflow-y: auto; padding: 0 var(--o-8); }
+.widzet__lista ul { list-style: none; margin: 0 0 var(--o-6); padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.widzet__dzien { margin: var(--o-6) 0 var(--o-4); font-size: var(--rozmiar-mikro); font-weight: var(--waga-pogrubiona); text-transform: uppercase; letter-spacing: 0.04em; color: var(--tekst-drugorzedny); }
+.widzet__dzien--zalegle { color: var(--stan-czerwony); }
+.widzet__pusto { margin: var(--o-4) 0; color: var(--tekst-wyciszony); font-size: var(--rozmiar-mikro); }
+.pozycja-widzetu {
+  display: flex; align-items: center; gap: var(--o-6); width: 100%; padding: 4px 6px;
+  border: 0; border-left: 3px solid var(--kolor); border-radius: var(--r-4);
+  background: color-mix(in srgb, var(--kolor) 11%, white); font: inherit; text-align: left; cursor: pointer; color: var(--tekst);
+}
+.pozycja-widzetu:hover { background: color-mix(in srgb, var(--kolor) 20%, white); }
+.pozycja-widzetu:focus-visible { outline: none; box-shadow: var(--fokus); }
+.pozycja-widzetu--czerwony { box-shadow: inset 0 0 0 1px var(--stan-czerwony); }
+.pozycja-widzetu--pomaranczowy { box-shadow: inset 0 0 0 1px var(--stan-pomaranczowy); }
+.pozycja-widzetu__ikona { display: inline-flex; color: var(--kolor); filter: brightness(0.8); flex: none; }
+.pozycja-widzetu__tekst { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.pozycja-widzetu__tytul { font-size: var(--rozmiar-etykieta); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pozycja-widzetu__opis { font-size: 10.5px; color: var(--tekst-drugorzedny); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pozycja-widzetu > svg { flex: none; color: var(--tekst-drugorzedny); }
+.widzet__stopka { display: flex; align-items: center; justify-content: space-between; gap: var(--o-8); padding: var(--o-6) var(--o-8) var(--o-8); border-top: 1px solid var(--linia); font-size: var(--rozmiar-mikro); color: var(--tekst-wyciszony); }
+.widzet__otworz { display: inline-flex; align-items: center; gap: 4px; border: 0; background: var(--akcent); color: #fff; border-radius: var(--r-6); padding: 5px 10px; font: inherit; font-size: var(--rozmiar-etykieta); cursor: pointer; }
+.widzet__otworz:hover { background: var(--akcent-hover); }
+.widzet__wiecej { border: 0; background: none; padding: 0 0 var(--o-6); font: inherit; font-size: var(--rozmiar-mikro); font-weight: var(--waga-pogrubiona); color: var(--akcent); cursor: pointer; }
+.widzet__wiecej:focus-visible { outline: none; box-shadow: var(--fokus); }
