@@ -34,7 +34,10 @@ export interface EdytorSpecyfikacjiProps {
 }
 
 export function EdytorSpecyfikacji({ specyfikacja, onZmiana, panel, tylkoDoOdczytu, akcjaBlokady }: EdytorSpecyfikacjiProps) {
-  const [zwiniete, ustawZwiniete] = useState<{ drzewo: boolean; panel: boolean }>(() => wczytajKopie("uklad-edytora") ?? { drzewo: false, panel: false });
+  const [zwiniete, ustawZwiniete] = useState<{ drzewo: boolean; panel: boolean }>(
+    // Na mniejszych ekranach (np. 1366×768) panel boczny startuje zwinięty, żeby tabela miała miejsce.
+    () => wczytajKopie("uklad-edytora") ?? { drzewo: false, panel: typeof window !== "undefined" && window.innerWidth < 1440 },
+  );
   const przelaczUklad = (k: "drzewo" | "panel") =>
     ustawZwiniete((z) => {
       const n = { ...z, [k]: !z[k] };

@@ -97,10 +97,10 @@
   --wys-pola-tabeli: 28px;
 }
 
-@media (max-width: 1500px) {
+/* Pasek boczny węższy na mniejszych ekranach; szerokości drzewa i panelu edytora zależą od
+   miejsca w edytorze (container queries w specyfikacja.css), nie od szerokości okna. */
+@media (max-width: 1600px) {
   :root {
-    --szer-paska: 160px;
-    --szer-drzewa: 224px;
-    --szer-panelu: 304px;
+    --szer-paska: 168px;
   }
 }

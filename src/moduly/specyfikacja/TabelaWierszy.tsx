@@ -136,6 +136,10 @@ export function TabelaWierszy({ czesc, agd, tylkoDoOdczytu, podpowiedzi, inneCze
   const tabela = useRef<HTMLTableElement>(null);
   const timery = useRef(new Map<number, ReturnType<typeof setTimeout>>());
   const wToku = useRef(new Set<number>());
+  /** Zapis zlecony w trakcie innego zapisu tego wiersza – wykonywany zaraz po nim. */
+  const oczekujace = useRef(new Map<number, Record<string, unknown> | undefined>());
+  const konfliktRef = useRef(konflikt);
+  konfliktRef.current = konflikt;
   const prefiks = useId();
   const kolumny = agd ? KOLUMNY_AGD : KOLUMNY;
   const widoczne = useMemo(() => wierszeWidoczne(czesc), [czesc]);
@@ -157,13 +161,17 @@ export function TabelaWierszy({ czesc, agd, tylkoDoOdczytu, podpowiedzi, inneCze
 
   /** Zapis szkicu wiersza (tylko poprawne, zmienione pola). */
   const zapisz = useCallback(
-    async (id: number): Promise<void> => {
+    async (id: number, wymusPoprzednie?: Record<string, unknown>): Promise<void> => {
       const t = timery.current.get(id);
       if (t) clearTimeout(t);
       timery.current.delete(id);
       const szkic = szkiceRef.current[id];
       const w = czescRef.current.wiersze.find((x) => x.id === id);
-      if (!szkic || tylkoDoOdczytu || wToku.current.has(id)) return;
+      if (!szkic || tylkoDoOdczytu) return;
+      if (wToku.current.has(id)) {
+        oczekujace.current.set(id, { ...oczekujace.current.get(id), ...wymusPoprzednie });
+        return;
+      }
       if (!w) {
         // Wiersz usunięty (także na innym stanowisku) – szkic nie ma już czego zapisać.
         ustawSzkice((s) => {
@@ -197,19 +205,28 @@ export function TabelaWierszy({ czesc, agd, tylkoDoOdczytu, podpowiedzi, inneCze
       }
       const poprzednie: Record<string, unknown> = {};
       for (const k of Object.keys(pola)) poprzednie[k] = k in szkic.poprzednie ? (szkic.poprzednie as Record<string, unknown>)[k] : (baza as Record<string, unknown>)[k];
+      // „Zachowaj moją” po konflikcie: wartości z serwera jako poprzednie.
+      for (const [k, v] of Object.entries(wymusPoprzednie ?? {})) if (k in pola) poprzednie[k] = v;
       wToku.current.add(id);
       ustawZapisywane((n) => n + 1);
       let konfliktowy = false;
       const wynik = await wykonaj(api.zmienWiersz(id, { ...(pola as DaneWiersza), poprzednie: poprzednie as DaneWiersza }), (e) => {
         if (e.kod === 409 && e.konflikty.length > 0) {
           konfliktowy = true;
-          ustawKonflikt({ wiersz: id, konflikty: e.konflikty });
+          // Użytkownik już wybrał „Zachowaj moją” (zapis czeka w kolejce) – nie pytamy drugi raz.
+          const f = oczekujace.current.get(id);
+          if (!(f && Object.keys(f).length > 0)) ustawKonflikt({ wiersz: id, konflikty: e.konflikty });
           return true;
         }
         return false;
       });
       wToku.current.delete(id);
       ustawZapisywane((n) => n - 1);
+      if (oczekujace.current.has(id)) {
+        const f = oczekujace.current.get(id);
+        oczekujace.current.delete(id);
+        if (!konfliktowy || (f && Object.keys(f).length > 0)) setTimeout(() => void zapiszRef.current(id, f), 0);
+      }
       ustawStanBledu(!wynik && !konfliktowy);
       if (wynik) {
         // Usuwamy z szkicu pola zapisane (chyba że w trakcie zapisu zmieniono je ponownie).
@@ -239,24 +256,28 @@ export function TabelaWierszy({ czesc, agd, tylkoDoOdczytu, podpowiedzi, inneCze
     [agd, api, podpowiedzi, tylkoDoOdczytu, wykonaj],
   );
 
-  const zapiszWszystkie = useCallback(async () => {
-    await Promise.all(Object.keys(szkiceRef.current).map((id) => zapisz(Number(id))));
-  }, [zapisz]);
-
-  // Zapis przy ukryciu/zamknięciu karty i przed zamknięciem okna Tauri; przy odmontowaniu.
-  useEffect(() => zarejestrujOproznianie(zapiszWszystkie), [zapiszWszystkie]);
+  // Stabilne odwołanie do najnowszego `zapisz` – rejestracja i sprzątanie tylko raz (inaczej
+  // każda zmiana danych rodzica wywoływałaby zapis „przy odmontowaniu” i podwójne żądania).
+  const zapiszRef = useRef(zapisz);
   useEffect(() => {
+    zapiszRef.current = zapisz;
+  }, [zapisz]);
+  useEffect(() => {
+    const zapiszWszystkie = async () => {
+      await Promise.all(Object.keys(szkiceRef.current).map((id) => zapiszRef.current(Number(id))));
+    };
+    const wyrejestruj = zarejestrujOproznianie(zapiszWszystkie);
     const t = timery.current;
     return () => {
+      wyrejestruj();
       for (const x of t.values()) clearTimeout(x);
       void zapiszWszystkie();
     };
-  }, [zapiszWszystkie]);
+  }, []);
 
   // Szkice odtworzone z kopii – zapis po chwili.
   useEffect(() => {
     for (const id of Object.keys(szkiceRef.current)) zaplanuj(Number(id));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function zaplanuj(id: number) {
@@ -264,7 +285,7 @@ export function TabelaWierszy({ czesc, agd, tylkoDoOdczytu, podpowiedzi, inneCze
     if (t) clearTimeout(t);
     timery.current.set(
       id,
-      setTimeout(() => void zapisz(id), OPOZNIENIE_ZAPISU_MS),
+      setTimeout(() => void zapiszRef.current(id), OPOZNIENIE_ZAPISU_MS),
     );
   }
 
@@ -407,6 +428,8 @@ export function TabelaWierszy({ czesc, agd, tylkoDoOdczytu, podpowiedzi, inneCze
   const opuszczenieWiersza = (e: FocusEvent<HTMLTableRowElement>, w: Wiersz) => {
     const cel = e.relatedTarget as Node | null;
     if (cel && e.currentTarget.contains(cel)) return;
+    // Otwarte okno konfliktu tego wiersza – zapis dopiero po decyzji użytkownika.
+    if (konfliktRef.current?.wiersz === w.id) return;
     void zapisz(w.id);
   };
 
@@ -677,7 +700,7 @@ export function TabelaWierszy({ czesc, agd, tylkoDoOdczytu, podpowiedzi, inneCze
               return { ...s, [wiersz]: { ...x, poprzednie: poprzednie as DaneWiersza } };
             });
             ustawKonflikt(null);
-            setTimeout(() => void zapisz(wiersz), 0);
+            void zapisz(wiersz, Object.fromEntries(konflikty.map((k) => [k.pole, k.aktualna])));
           }}
           onCudza={() => {
             const { wiersz, konflikty } = konflikt;

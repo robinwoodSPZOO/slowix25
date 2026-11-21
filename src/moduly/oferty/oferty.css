@@ -30,7 +30,8 @@
 .ekran-oferty__blad { margin: var(--o-8) var(--o-16) 0; }
 .ekran-oferty__tresc { flex: 1; min-height: 0; }
 
-@media (max-width: 1500px) {
+.ekran-oferty__naglowek { container-type: inline-size; }
+@container (max-width: 1200px) {
   .ekran-oferty__naglowek .przycisk { padding: 0 var(--o-8); }
 }
 
@@ -91,3 +92,6 @@
 .ustawienia-ofert__formularz { display: flex; flex-direction: column; gap: var(--o-12); padding: var(--o-16); width: 100%; }
 .ustawienia-ofert__rzad { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--o-12); }
 .ustawienia-ofert__przyciski { display: flex; gap: var(--o-8); align-items: center; }
+.pole-kwoty__blad { position: absolute; top: 100%; right: 0; z-index: 3; margin-top: 2px; white-space: nowrap; font-size: var(--rozmiar-mikro); color: var(--stan-czerwony); background: var(--tlo-powierzchni); padding: 1px 4px; border-radius: var(--r-4); box-shadow: var(--cien-1); }
+.panel-wyceny__agd { display: flex; flex-direction: column; gap: var(--o-2); }
+.panel-zdjec__brak { display: block; width: 88px; height: 66px; border-radius: var(--r-4); background: var(--tlo-wyciszone); }
