@@ -610,10 +610,7 @@ mod testy {
 
     #[test]
     fn kody_szablonow() {
-        assert_eq!(
-            kod_z_nazwy("łazienka / WC (stelaż)"),
-            "lazienka-wc-stelaz"
-        );
+        assert_eq!(kod_z_nazwy("łazienka / WC (stelaż)"), "lazienka-wc-stelaz");
         assert_eq!(kod_z_nazwy("  Szafa / wnęka "), "szafa-wneka");
     }
 
