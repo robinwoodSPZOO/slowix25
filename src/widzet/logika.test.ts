@@ -47,3 +47,26 @@ describe("pamięć widżetu", () => {
     expect(wczytajPamiec()).toBeNull();
   });
 });
+
+describe("pamięć o nieoczekiwanym kształcie (W10)", () => {
+  beforeEach(() => localStorage.clear());
+  it("odrzuca złe dane i pomija złe zadania", async () => {
+    const { sprawdzPamiec } = await import("./logika");
+    expect(sprawdzPamiec(null)).toBeNull();
+    expect(sprawdzPamiec({ czas: "x", dzis: DZIS, zadania: [] })).toBeNull();
+    expect(sprawdzPamiec({ czas: "2027-01-11T08:00:00Z", dzis: DZIS, zadania: "nie" })).toBeNull();
+    const p = sprawdzPamiec({
+      czas: "2027-01-11T08:00:00Z",
+      dzis: DZIS,
+      zadania: [zadanie({ id: 1, data_od: DZIS }), { id: 2 }, null, { ...zadanie({ id: 3, data_od: DZIS }), stan: null }, { ...zadanie({ id: 4, data_od: DZIS }), stan: { stan: "fioletowy", opis: "x" } }],
+    });
+    expect(p!.zadania.map((z) => z.id)).toEqual([1]);
+  });
+  it("wczytajPamiec usuwa uszkodzoną pamięć", () => {
+    localStorage.setItem("robinwood:widzet:pamiec", JSON.stringify({ zadania: [{}], czas: 5 }));
+    expect(wczytajPamiec()).toBeNull();
+    expect(localStorage.getItem("robinwood:widzet:pamiec")).toBeNull();
+    localStorage.setItem("robinwood:widzet:pamiec", "{nie json");
+    expect(wczytajPamiec()).toBeNull();
+  });
+});
