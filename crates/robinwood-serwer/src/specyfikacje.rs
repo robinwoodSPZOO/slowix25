@@ -1488,16 +1488,24 @@ async fn zapisz_wiersz_w(
         rozlej_material_korpusu(tx, stary.czesc_id).await?;
     }
     dziennik(tx, "wiersze_specyfikacji", id, "zmiana").await?;
-    if zmiana_statusu_do_potwierdzenia(&stary.status, d.status.as_deref().unwrap_or("ustalone")) {
+    let nowy_status = d.status.as_deref().unwrap_or("ustalone");
+    if zmiana_statusu_do_potwierdzenia(&stary.status, nowy_status)
+        || (nowy_status == "do_potwierdzenia"
+            && stary.kategoria_materialu_id != d.kategoria_materialu_id)
+    {
         po_zmianie_statusu_wiersza(tx, spec_id).await?;
     }
     wynik(tx, id, spec_id).await
 }
 
-/// Punkt zaczepienia dla modułów zależnych od statusów wierszy (kalendarz: wiersze „do
-/// potwierdzenia” wstrzymują zamówienia materiałów). Wywoływany w transakcji zapisu wiersza,
-/// gdy wiersz przechodzi z/na „do potwierdzenia” (także przy dodaniu i usunięciu takiego wiersza).
-async fn po_zmianie_statusu_wiersza(_tx: &mut SqliteConnection, _spec_id: i64) -> Wynik<()> {
+/// Kalendarz: wiersze „do potwierdzenia” (z kategorią materiału) wstrzymują zamówienia
+/// materiałów zlecenia, którego umowa wskazuje tę specyfikację. Wywoływane w transakcji zapisu,
+/// gdy wiersz przechodzi z/na „do potwierdzenia”, gdy zmienia się kategoria takiego wiersza oraz
+/// przy dodaniu/usunięciu takiego wiersza, części albo sekcji – przeliczenie harmonogramu
+/// (`terminarz::przelicz_po_zmianie_specyfikacji`) idzie w tej samej transakcji. Specyfikacje
+/// ofert nie mają zleceń (nic się nie dzieje).
+async fn po_zmianie_statusu_wiersza(tx: &mut SqliteConnection, spec_id: i64) -> Wynik<()> {
+    crate::terminarz::przelicz_po_zmianie_specyfikacji(tx, spec_id).await?;
     Ok(())
 }
 

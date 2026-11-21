@@ -223,7 +223,7 @@ pub async fn zmien_ustawienia(
     for ((pole, _), v) in KLUCZE_USTAWIEN.iter().zip(wartosci) {
         dni(pole, v)?;
     }
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let mut zapisz = Vec::new();
     if let Some(l) = z.liczenie_dni {
         zapisz.push(("liczenie_dni", l.jako_tekst().to_string()));
@@ -299,7 +299,7 @@ pub async fn ustaw_dzien_wolny(
         .opis
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     sqlx::query(
         "INSERT INTO dni_wolne (data, rodzaj, opis) VALUES (?1, ?2, ?3) \
          ON CONFLICT(data) DO UPDATE SET rodzaj = excluded.rodzaj, opis = excluded.opis",
@@ -324,7 +324,7 @@ pub async fn ustaw_dzien_wolny(
 
 pub async fn usun_dzien_wolny(pula: &SqlitePool, d: &str) -> Wynik<WynikPrzeliczeniaWszystkich> {
     let d = tekst(data(d)?);
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let n = sqlx::query("DELETE FROM dni_wolne WHERE data = ?1")
         .bind(&d)
         .execute(&mut *tx)
@@ -466,7 +466,7 @@ pub async fn zmien_widelki_kategorii(
     w: WidelkiKategorii,
 ) -> Wynik<WynikPrzeliczeniaWszystkich> {
     sprawdz_widelki(w.dni_dostawy_min, w.dni_dostawy_max)?;
-    let mut conn = pula.begin().await?;
+    let mut conn = crate::baza::transakcja_zapisu(pula).await?;
     if let Some(d) = w.domyslny_dostawca_id {
         istnieje(
             &mut conn,
@@ -553,7 +553,7 @@ pub async fn zapisz_czas_dostawy(
     d: DaneCzasuDostawy,
 ) -> Wynik<(CzasDostawy, WynikPrzeliczeniaWszystkich)> {
     sprawdz_widelki(d.dni_min, d.dni_max)?;
-    let mut conn = pula.begin().await?;
+    let mut conn = crate::baza::transakcja_zapisu(pula).await?;
     istnieje(
         &mut conn,
         "SELECT id FROM kategorie_materialow WHERE id = ?1",
@@ -614,7 +614,7 @@ pub async fn zapisz_czas_dostawy(
 }
 
 pub async fn usun_czas_dostawy(pula: &SqlitePool, id: i64) -> Wynik<WynikPrzeliczeniaWszystkich> {
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let n = sqlx::query("DELETE FROM czasy_dostaw WHERE id = ?1")
         .bind(id)
         .execute(&mut *tx)
@@ -730,7 +730,7 @@ pub async fn zapisz_zlecenie(
     dni("odstep_materialy_dni", d.odstep_materialy_dni)?;
     dni("odstep_rysunki_dni", d.odstep_rysunki_dni)?;
     dni("odstep_pomiar_dni", d.odstep_pomiar_dni)?;
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     istnieje(
         &mut tx,
         "SELECT id FROM klienci WHERE id = ?1 AND usunieto IS NULL",
@@ -959,7 +959,7 @@ pub async fn dodaj_material(
     d: DaneMaterialu,
 ) -> Wynik<Material> {
     let status = status_materialu(d.data_zamowienia, d.data_dostawy)?;
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     zlecenie(&mut tx, zlecenie_id).await?;
     istnieje(
         &mut tx,
@@ -1015,7 +1015,7 @@ pub async fn dodaj_material(
 /// Częściowa zmiana materiału. Pola pominięte zostają bez zmian – w szczególności daty
 /// zamówienia i dostawy oraz stan wykonania zadania „zamówić”.
 pub async fn zmien_material(pula: &SqlitePool, id: i64, z: ZmianaMaterialu) -> Wynik<Material> {
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let m = material(&mut tx, id).await?;
     let kategoria = z.kategoria_id.unwrap_or(m.kategoria_id);
     istnieje(
@@ -1098,7 +1098,7 @@ pub async fn zmien_material(pula: &SqlitePool, id: i64, z: ZmianaMaterialu) -> W
 /// Jawne cofnięcie zamówienia materiału: czyści daty zamówienia i dostawy, przywraca status
 /// `do_zamowienia` i zadanie „zamówić” jako niewykonane, przelicza zlecenie.
 pub async fn cofnij_zamowienie(pula: &SqlitePool, id: i64) -> Wynik<Material> {
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let m = material(&mut tx, id).await?;
     if m.data_zamowienia.is_none() {
         return Err(BladApi::NieprawidloweDane(format!(
@@ -1148,7 +1148,7 @@ async fn cofnij_zamowienie_w(conn: &mut SqliteConnection, m: &Material) -> Wynik
 /// Niewykonane zadania materiału są usuwane z wpisem w dzienniku; wykonane (np. potwierdzenie
 /// klienta) zostają jako historia, odłączone od materiału.
 pub async fn usun_material(pula: &SqlitePool, id: i64) -> Wynik<i64> {
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let m = material(&mut tx, id).await?;
     if m.data_zamowienia.is_some() || m.status != "do_zamowienia" {
         return Err(BladApi::NieprawidloweDane(format!(
@@ -1429,7 +1429,7 @@ pub enum Przeliczenie {
 /// Liczy harmonogram i zapisuje zadania zlecenia (wykonane i ręczne zostają bez zmian).
 /// Błąd danych → 422; jeśli zlecenie miało już harmonogram, zostaje on oznaczony jako nieaktualny.
 pub async fn generuj(pula: &SqlitePool, id: i64) -> Wynik<WynikGenerowania> {
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let (u, kal) = kalendarz_dni(&mut tx).await?;
     match przelicz_w(&mut tx, id, &u, &kal).await? {
         Ok(w) => {
@@ -1454,7 +1454,8 @@ async fn przelicz_w(
     u: &UstawieniaTerminow,
     kal: &KalendarzDni,
 ) -> Wynik<Result<WynikGenerowania, String>> {
-    let mut sp = sqlx::Connection::begin(&mut *conn).await?;
+    // savepoint: punkt zapisu wewnątrz transakcji zapisu wywołującego (BEGIN IMMEDIATE)
+    let mut sp = sqlx::Connection::begin(&mut *conn).await?; // savepoint
     match generuj_w(&mut sp, id, u, kal).await {
         Ok(w) => {
             let n = sqlx::query(
@@ -1762,7 +1763,7 @@ pub async fn przelicz_jesli_jest_w(conn: &mut SqliteConnection, id: i64) -> Wyni
 /// `POST /zlecenia/{id}/przelicz`: przeliczenie istniejącego harmonogramu na żądanie (np. po
 /// zmianie statusu wiersza specyfikacji). Nie tworzy harmonogramu, gdy go nie ma.
 pub async fn przelicz_zlecenie(pula: &SqlitePool, id: i64) -> Wynik<(Zlecenie, Przeliczenie)> {
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let p = przelicz_jesli_jest_w(&mut tx, id).await?;
     let z = zlecenie(&mut tx, id).await?;
     tx.commit().await?;
@@ -1822,7 +1823,7 @@ pub async fn przelicz_wszystkie_w(
 
 /// Przelicza wszystkie zlecenia z harmonogramem (`POST /kalendarz/przelicz`).
 pub async fn przelicz_wszystkie(pula: &SqlitePool) -> Wynik<WynikPrzeliczeniaWszystkich> {
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let w = przelicz_wszystkie_w(&mut tx).await?;
     tx.commit().await?;
     Ok(w)
@@ -2217,7 +2218,7 @@ pub async fn wykonaj(
         )
     })?;
     nie_z_przyszlosci("data wykonania", wykonano, dzis)?;
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let r: Option<DaneZadaniaDoWykonania> = sqlx::query_as(
         "SELECT zlecenie_id, zamowienie_id, typ, klucz FROM zadania_kalendarza WHERE id = ?1",
     )
@@ -2470,7 +2471,7 @@ pub async fn zapisz_zadanie_reczne(
             "data końca przed datą początku".into(),
         ));
     }
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     if let Some(z) = d.zlecenie_id {
         zlecenie(&mut tx, z).await?;
     }
@@ -2536,7 +2537,7 @@ pub async fn zapisz_zadanie_reczne(
 /// Usuwa zadanie ręczne (także stare „wyliczone” bez klucza – nikt ich nie przelicza).
 /// Zadań wyliczonych z kluczem nie usuwa się (znikają przy przeliczeniu).
 pub async fn usun_zadanie_reczne(pula: &SqlitePool, id: i64) -> Wynik<Option<i64>> {
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let zl: Option<(Option<i64>, bool, Option<String>)> = sqlx::query_as(
         "SELECT zlecenie_id, wyliczone, klucz FROM zadania_kalendarza WHERE id = ?1",
     )

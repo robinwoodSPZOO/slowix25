@@ -113,6 +113,17 @@ fn zmiana_spec(stan: &StanApi, w: &WynikZmiany) {
             id: wl.nadrzedny_id,
             operacja: Operacja::Zmiana,
         });
+        // Specyfikacja umowy/aneksu może zmienić blokady zamówień i harmonogram zleceń
+        // (przeliczone w transakcji zapisu) – kalendarz odświeża zadania.
+        if wl.rodzaj != "wersja_oferty" {
+            for zasob in ["zlecenia", "zadania_kalendarza"] {
+                stan.zdarzenia.wyslij(Zdarzenie {
+                    zasob,
+                    id: 0,
+                    operacja: Operacja::Zmiana,
+                });
+            }
+        }
     }
 }
 

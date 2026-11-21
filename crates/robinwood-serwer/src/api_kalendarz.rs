@@ -10,22 +10,20 @@
 //! terminu montażu) nie blokuje zapisu – zlecenie dostaje znacznik `harmonogram_nieaktualny`.
 //!
 //! Wejście: nieznane pola są odrzucane, a błędy deserializacji treści, ścieżki i parametrów
-//! zwracają 422 z JSON `{"blad": …}` (własne ekstraktory poniżej; trasy Klientów bez zmian).
+//! zwracają 422 z JSON `{"blad": …}` po polsku – wspólne ekstraktory serwera `crate::wejscie`.
 
-use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
-use axum::extract::{FromRequest, FromRequestParts, Request, State};
-use axum::http::request::Parts;
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use chrono::NaiveDate;
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::api::StanApi;
 use crate::bledy::{BladApi, Wynik};
 use crate::kalendarz::{self, Harmonogram, Swieto, UstawieniaTerminow};
 use crate::terminarz::{self as t, wej, Przeliczenie, ZadanieKalendarza};
+use crate::wejscie::{Cialo, Parametry, Sciezka};
 use crate::zdarzenia::{Operacja, Zdarzenie};
 
 pub fn trasy() -> Router<StanApi> {
@@ -75,56 +73,6 @@ pub fn trasy() -> Router<StanApi> {
         )
         .route("/kalendarz/swieta", get(swieta))
         .route("/kalendarz/przelicz", post(przelicz_wszystko))
-}
-
-// --- Ekstraktory z błędami w JSON ------------------------------------------
-
-/// Treść JSON; błąd → 422 `{"blad": …}` (zamiast tekstowej odpowiedzi axum).
-struct Cialo<T>(T);
-
-impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for Cialo<T> {
-    type Rejection = BladApi;
-
-    async fn from_request(req: Request, stan: &S) -> Result<Self, Self::Rejection> {
-        Json::<T>::from_request(req, stan)
-            .await
-            .map(|Json(v)| Cialo(v))
-            .map_err(|e: JsonRejection| {
-                BladApi::NieprawidloweDane(format!("treść żądania: {}", e.body_text()))
-            })
-    }
-}
-
-/// Parametry ścieżki; błąd → 422 JSON.
-struct Sciezka<T>(T);
-
-impl<S: Send + Sync, T: DeserializeOwned + Send> FromRequestParts<S> for Sciezka<T> {
-    type Rejection = BladApi;
-
-    async fn from_request_parts(parts: &mut Parts, stan: &S) -> Result<Self, Self::Rejection> {
-        axum::extract::Path::<T>::from_request_parts(parts, stan)
-            .await
-            .map(|axum::extract::Path(v)| Sciezka(v))
-            .map_err(|e: PathRejection| {
-                BladApi::NieprawidloweDane(format!("ścieżka: {}", e.body_text()))
-            })
-    }
-}
-
-/// Parametry zapytania; błąd (także nieznany parametr) → 422 JSON.
-struct Parametry<T>(T);
-
-impl<S: Send + Sync, T: DeserializeOwned> FromRequestParts<S> for Parametry<T> {
-    type Rejection = BladApi;
-
-    async fn from_request_parts(parts: &mut Parts, stan: &S) -> Result<Self, Self::Rejection> {
-        axum::extract::Query::<T>::from_request_parts(parts, stan)
-            .await
-            .map(|axum::extract::Query(v)| Parametry(v))
-            .map_err(|e: QueryRejection| {
-                BladApi::NieprawidloweDane(format!("parametry: {}", e.body_text()))
-            })
-    }
 }
 
 fn dzis_serwera() -> NaiveDate {
