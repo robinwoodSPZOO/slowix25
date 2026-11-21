@@ -8,7 +8,7 @@ import type { Specyfikacja } from "../../api/typy";
 import type { DaneAneksu, PelnyAneks, StatusAneksu } from "../../api/typyUmow";
 import { usePolaczenie } from "../../kontekst/Polaczenie";
 import { bladKwoty, formatujDate, formatujKwote, parsujKwote } from "../../lib/formaty";
-import { EtykietaStatusu, Pole, Przycisk } from "../../ui";
+import { EtykietaStatusu, Pole, Przycisk, Segment } from "../../ui";
 import { EdytorSpecyfikacji, OknoKonfliktu } from "../specyfikacja";
 import { opisHarmonogramu } from "./EkranUmowy";
 import { nazwaPolaUmowy } from "./logika";
@@ -27,6 +27,7 @@ export function EkranAneksu() {
   const [komunikat, ustawKomunikat] = useState<string | null>(null);
   const [dokument, ustawDokument] = useState(false);
   const [kwota, ustawKwote] = useState<string | null>(null);
+  const [zakladka, ustawZakladke] = useState<"warunki" | "specyfikacja">("warunki");
 
   const wczytaj = useCallback(async () => {
     if (!api) return;
@@ -160,58 +161,75 @@ export function EkranAneksu() {
           </div>
         )}
       </div>
-      <div className="ekran-aneksu">
-        <section className="karta grupa-umowy ekran-aneksu__formularz" aria-label="Warunki aneksu">
-          <h3>Warunki aneksu</h3>
-          <div className="grupa-umowy__dwie">
-            <PoleTekstu f={f} k="data" typ="date" etykieta="Data aneksu" blokada={ro} />
-            <PoleTekstu f={f} k="nowy_termin_montazu" typ="date" etykieta="Nowy termin rozpoczęcia montażu" blokada={ro} pomoc="Puste = bez zmiany terminu" />
-          </div>
-          <Pole etykieta="Zmiana wynagrodzenia (+/−)" id="a-kwota" blad={bladK} pomoc={`Nowa wartość: ${formatujKwote(dane.nowa_wartosc_gr)}`}>
-            <span className="pole-zl">
-              <input
-                id="a-kwota"
-                inputMode="decimal"
-                value={tekstKwoty}
-                disabled={ro}
-                onFocus={() => ustawKwote(tekstKwoty)}
-                onChange={(e) => ustawKwote(e.target.value)}
-                onBlur={() => {
-                  if (kwota === null || bladKwoty(kwota)) return;
-                  const n = kwota.trim() ? parsujKwote(kwota) : 0;
-                  ustawKwote(null);
-                  if (n !== null) f.zapisz("zmiana_ceny_gr", n);
-                }}
-              />
-              <span aria-hidden>zł</span>
-            </span>
-          </Pole>
-          <PoleTekstu f={f} k="opis_zmian" etykieta="Opis zmian (każda zmiana w osobnej linii)" wiele blokada={ro} />
-          <h3>Lista zmian w dokumencie</h3>
-          {dane.lista_zmian.length > 0 ? (
-            <ol className="lista-zmian">
-              {dane.lista_zmian.map((z, i) => (
-                <li key={i}>{z}</li>
-              ))}
-            </ol>
-          ) : (
-            <p className="grupa-umowy__info">Brak zmian – opisz zmiany, zmień kwotę, termin albo specyfikację obok.</p>
-          )}
-        </section>
-        <div className="ekran-aneksu__edytor">
-          {dane.specyfikacja && (
-            <EdytorSpecyfikacji
-              specyfikacja={dane.specyfikacja}
-              onZmiana={poZmianieSpecyfikacji}
-              panel={() => (
-                <div className="panel-roznic">
-                  <h3>Różnice względem umowy</h3>
-                  <ListaRoznic roznice={dane.roznice} pusta="Specyfikacja bez zmian." />
-                </div>
+      <div className="ekran-umowy__zakladki">
+        <Segment<"warunki" | "specyfikacja">
+          etykieta="Widok aneksu"
+          wartosc={zakladka}
+          onZmiana={ustawZakladke}
+          opcje={[
+            { wartosc: "warunki", etykieta: "Warunki i lista zmian" },
+            { wartosc: "specyfikacja", etykieta: `Specyfikacja${dane.roznice.length ? ` · ${dane.roznice.length} zmian` : ""}` },
+          ]}
+        />
+      </div>
+      <div className={`ekran-umowy__tresc${zakladka === "specyfikacja" ? " ekran-umowy__tresc--edytor" : ""}`}>
+        {zakladka === "warunki" && (
+          <div className="ekran-aneksu">
+            <section className="karta grupa-umowy" aria-label="Warunki aneksu">
+              <h3>Warunki aneksu</h3>
+              <div className="grupa-umowy__dwie">
+                <PoleTekstu f={f} k="data" typ="date" etykieta="Data aneksu" blokada={ro} />
+                <PoleTekstu f={f} k="nowy_termin_montazu" typ="date" etykieta="Nowy termin montażu" blokada={ro} pomoc="Puste = bez zmiany terminu" />
+              </div>
+              <Pole etykieta="Zmiana wynagrodzenia (+/−)" id="a-kwota" blad={bladK} pomoc={`Nowa wartość: ${formatujKwote(dane.nowa_wartosc_gr)}`}>
+                <span className="pole-zl">
+                  <input
+                    id="a-kwota"
+                    inputMode="decimal"
+                    value={tekstKwoty}
+                    disabled={ro}
+                    onFocus={() => ustawKwote(tekstKwoty)}
+                    onChange={(e) => ustawKwote(e.target.value)}
+                    onBlur={() => {
+                      if (kwota === null || bladKwoty(kwota)) return;
+                      const n = kwota.trim() ? parsujKwote(kwota) : 0;
+                      ustawKwote(null);
+                      if (n !== null) f.zapisz("zmiana_ceny_gr", n);
+                    }}
+                  />
+                  <span aria-hidden>zł</span>
+                </span>
+              </Pole>
+              <PoleTekstu f={f} k="opis_zmian" etykieta="Opis zmian (każda zmiana w osobnej linii)" wiele blokada={ro} />
+            </section>
+            <section className="karta grupa-umowy" aria-label="Lista zmian">
+              <h3>Lista zmian w dokumencie</h3>
+              {dane.lista_zmian.length > 0 ? (
+                <ol className="lista-zmian">
+                  {dane.lista_zmian.map((z, i) => (
+                    <li key={i}>{z}</li>
+                  ))}
+                </ol>
+              ) : (
+                <p className="grupa-umowy__info">Brak zmian – opisz zmiany, zmień kwotę, termin albo specyfikację (zakładka „Specyfikacja”).</p>
               )}
-            />
-          )}
-        </div>
+              <h3>Różnice specyfikacji względem umowy</h3>
+              <ListaRoznic roznice={dane.roznice} pusta="Specyfikacja bez zmian." />
+            </section>
+          </div>
+        )}
+        {zakladka === "specyfikacja" && dane.specyfikacja && (
+          <EdytorSpecyfikacji
+            specyfikacja={dane.specyfikacja}
+            onZmiana={poZmianieSpecyfikacji}
+            panel={() => (
+              <div className="panel-roznic">
+                <h3>Różnice względem umowy</h3>
+                <ListaRoznic roznice={dane.roznice} pusta="Specyfikacja bez zmian." />
+              </div>
+            )}
+          />
+        )}
       </div>
       {f.konflikt && (
         <OknoKonfliktu

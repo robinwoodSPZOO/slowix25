@@ -36,9 +36,9 @@
 .grupa-umowy__dane dt { color: var(--tekst-wyciszony); }
 .grupa-umowy__dane dd { margin: 0; overflow-wrap: anywhere; }
 
-.pole-zl { position: relative; display: flex; align-items: center; }
-.pole-zl input { width: 100%; padding-right: 44px !important; text-align: right; font-variant-numeric: tabular-nums; }
-.pole-zl > span { position: absolute; right: 8px; font-size: var(--rozmiar-mikro); color: var(--tekst-wyciszony); pointer-events: none; }
+.pole-zl { display: flex; align-items: center; gap: var(--o-6); }
+.pole-zl input { flex: 1; min-width: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.pole-zl > span { flex: none; font-size: var(--rozmiar-mikro); color: var(--tekst-wyciszony); }
 
 .tabela--zwarta th, .tabela--zwarta td { padding: var(--o-4) var(--o-6); font-size: var(--rozmiar-tabela); }
 .tabela tfoot th { font-weight: var(--waga-pogrubiona); border-top: 1px solid var(--linia-mocna); }
@@ -92,9 +92,7 @@
 .wiersz-klikalny { cursor: pointer; }
 .wiersz-klikalny:hover td { background: var(--tlo-wyciszone); }
 
-.ekran-aneksu { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(320px, 400px) minmax(0, 1fr); }
-.ekran-aneksu__formularz { border-radius: 0; border-width: 0 1px 0 0; box-shadow: none; overflow: auto; }
-.ekran-aneksu__edytor { min-width: 0; min-height: 0; }
+.ekran-aneksu { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: var(--o-12); align-items: start; max-width: 1400px; }
 .lista-zmian { margin: 0; padding-left: var(--o-20); display: flex; flex-direction: column; gap: var(--o-4); font-size: var(--rozmiar-etykieta); }
 
 /* Okno dokumentu */
@@ -114,3 +112,4 @@
 .ustawienia-umow__instrukcja ol { display: flex; flex-direction: column; gap: var(--o-6); padding-left: var(--o-20); }
 .ustawienia-umow__instrukcja code { font-size: var(--rozmiar-etykieta); white-space: nowrap; }
 @media (max-width: 1400px) { .ustawienia-umow__kolumny { grid-template-columns: 1fr; } }
+.grupa-umowy__info a { color: var(--akcent); }
