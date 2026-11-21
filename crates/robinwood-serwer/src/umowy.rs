@@ -167,7 +167,9 @@ pub fn sprawdz_date(nazwa: &str, d: &Option<String>) -> Wynik<Option<NaiveDate>>
         None => Ok(None),
         Some(t) => {
             let d = NaiveDate::parse_from_str(t, "%Y-%m-%d").map_err(|_| {
-                BladApi::NieprawidloweDane(format!("{nazwa}: nieprawidłowa data „{t}” (RRRR-MM-DD)"))
+                BladApi::NieprawidloweDane(format!(
+                    "{nazwa}: nieprawidłowa data „{t}” (RRRR-MM-DD)"
+                ))
             })?;
             if !(1990..=2100).contains(&d.year()) {
                 return Err(BladApi::NieprawidloweDane(format!(
@@ -194,8 +196,16 @@ impl DaneUmowy {
             ("numer umowy", &mut self.numer, 50),
             ("miejscowość", &mut self.miejscowosc, MAKS_NAZWA),
             ("wariant płatności", &mut self.wariant_platnosci, 1),
-            ("rodzaj nieruchomości", &mut self.vat_rodzaj_nieruchomosci, 40),
-            ("podstawa powierzchni", &mut self.vat_podstawa_powierzchni, 1000),
+            (
+                "rodzaj nieruchomości",
+                &mut self.vat_rodzaj_nieruchomosci,
+                40,
+            ),
+            (
+                "podstawa powierzchni",
+                &mut self.vat_podstawa_powierzchni,
+                1000,
+            ),
             ("uwagi", &mut self.uwagi, MAKS_DLUGI),
             ("adres montażu", &mut self.montaz_ulica, MAKS_NAZWA),
             ("kod pocztowy", &mut self.montaz_kod, 20),
@@ -203,7 +213,11 @@ impl DaneUmowy {
             ("piętro", &mut self.montaz_pietro, 100),
             ("kod domofonu", &mut self.montaz_kod_domofonu, 100),
             ("parking", &mut self.montaz_parking, 1000),
-            ("winda / wniesienie", &mut self.montaz_winda_wniesienie, 1000),
+            (
+                "winda / wniesienie",
+                &mut self.montaz_winda_wniesienie,
+                1000,
+            ),
         ] {
             *t = oczysc_tekst(t.take());
             limity::tekst(n, t.as_deref(), m)?;
@@ -224,9 +238,7 @@ impl DaneUmowy {
         limity::kwota("kwota przed montażem", self.kwota_przed_montazem_gr)?;
         if let Some(s) = self.stawka_vat {
             if s != 8 && s != 23 {
-                return Err(BladApi::NieprawidloweDane(
-                    "stawka VAT: 8 albo 23".into(),
-                ));
+                return Err(BladApi::NieprawidloweDane("stawka VAT: 8 albo 23".into()));
             }
         }
         if let Some(r) = &self.vat_rodzaj_nieruchomosci {
@@ -244,7 +256,11 @@ impl DaneUmowy {
                 ));
             }
         }
-        dni_opc("dni na brakujące informacje", self.dni_na_brakujace_informacje, 365)?;
+        dni_opc(
+            "dni na brakujące informacje",
+            self.dni_na_brakujace_informacje,
+            365,
+        )?;
         dni_opc("czas warsztatu", self.czas_warsztat_dni, 365)?;
         dni_opc("czas montażu", self.czas_montazu_dni, 365)?;
         if self.czas_montazu_dni == Some(0) {
@@ -717,9 +733,21 @@ pub async fn zapisz_ustawienia(pula: &SqlitePool, u: UstawieniaUmow) -> Wynik<Us
         ("dni na brakujące informacje", u.dni_na_informacje, 365),
         ("termin zadatku", u.termin_zadatku_dni, 365),
         ("zadatek %", u.zadatek_procent, 100),
-        ("wariant A – dni przed montażem", u.wariant_a_dni_przed_montazem, 60),
-        ("wariant B – dni przed montażem", u.wariant_b_dni_przed_montazem, 60),
-        ("wariant B – dni po odbiorze", u.wariant_b_dni_po_odbiorze, 60),
+        (
+            "wariant A – dni przed montażem",
+            u.wariant_a_dni_przed_montazem,
+            60,
+        ),
+        (
+            "wariant B – dni przed montażem",
+            u.wariant_b_dni_przed_montazem,
+            60,
+        ),
+        (
+            "wariant B – dni po odbiorze",
+            u.wariant_b_dni_po_odbiorze,
+            60,
+        ),
         ("czas warsztatu", u.czas_warsztat_dni, 365),
         ("czas montażu", u.czas_montazu_dni, 365),
     ] {
@@ -786,7 +814,10 @@ pub fn parsuj_numer(format: &str, numer: &str) -> Option<(i64, i64)> {
     };
     while !f.is_empty() {
         let (token, dl_f) = if f.starts_with("{NNN}") || f.starts_with("{RRRR}") {
-            (&f[..if f.starts_with("{NNN}") { 5 } else { 6 }], if f.starts_with("{NNN}") { 5 } else { 6 })
+            (
+                &f[..if f.starts_with("{NNN}") { 5 } else { 6 }],
+                if f.starts_with("{NNN}") { 5 } else { 6 },
+            )
         } else if f.starts_with("{NN}") || f.starts_with("{RR}") {
             (&f[..4], 4)
         } else if f.starts_with("{N}") {
@@ -896,7 +927,10 @@ pub async fn protokol_w(db: &mut SqliteConnection, id: i64) -> Wynik<Option<Prot
     .await?)
 }
 
-pub async fn osoby_kontaktowe_w(db: &mut SqliteConnection, klient_id: i64) -> Wynik<Vec<OsobaKontaktowa>> {
+pub async fn osoby_kontaktowe_w(
+    db: &mut SqliteConnection,
+    klient_id: i64,
+) -> Wynik<Vec<OsobaKontaktowa>> {
     Ok(sqlx::query_as(
         "SELECT id, imie_nazwisko, rola, email, telefon FROM osoby_kontaktowe WHERE klient_id = ?1 ORDER BY id",
     )
@@ -936,7 +970,9 @@ pub fn wejscie_planu(u: &Umowa, data_odbioru: Option<NaiveDate>) -> WejsciePlanu
 pub async fn plan_w(db: &mut SqliteConnection, u: &Umowa) -> Wynik<PlanPlatnosci> {
     let ust = ustawienia_w(db).await?;
     let wolne = dni_wolne_daty(db).await?;
-    let odbior = protokol_w(db, u.id).await?.and_then(|p| data_opc(&Some(p.data)));
+    let odbior = protokol_w(db, u.id)
+        .await?
+        .and_then(|p| data_opc(&Some(p.data)));
     Ok(platnosci::wylicz_plan(
         &wejscie_planu(u, odbior),
         &ust.platnosci(),
@@ -1078,7 +1114,11 @@ pub async fn pelna_w(db: &mut SqliteConnection, id: i64) -> Wynik<PelnaUmowa> {
     );
     let mut ostrzezenia = ostrzezenia_vat(&umowa.dane);
     ostrzezenia.extend(plan.ostrzezenia.iter().cloned());
-    if umowa.dane.zalaczniki.as_ref().is_some_and(|z| z.iter().any(|s| s == "2"))
+    if umowa
+        .dane
+        .zalaczniki
+        .as_ref()
+        .is_some_and(|z| z.iter().any(|s| s == "2"))
         && !etapy.is_empty()
         && !kontrola_etapow.zgodna
     {
@@ -1135,7 +1175,9 @@ fn braki(u: &Umowa, plan: &PlanPlatnosci, etapy: &[Etap], k: &KontrolaEtapow) ->
     for e in &plan.bledy {
         b.push(format!("płatności: {e}"));
     }
-    if d.zalaczniki.as_ref().is_some_and(|z| z.iter().any(|s| s == "2"))
+    if d.zalaczniki
+        .as_ref()
+        .is_some_and(|z| z.iter().any(|s| s == "2"))
         && !etapy.is_empty()
         && !k.zgodna
     {
@@ -1252,7 +1294,8 @@ pub async fn dodaj(pula: &SqlitePool, d: DaneNowejUmowy) -> Wynik<PelnaUmowa> {
                     "z tej wersji oferty powstała już umowa {n}"
                 )));
             }
-            let spec = specyfikacje::kopiuj_specyfikacje_w(&mut tx, p.wersja.specyfikacja_id).await?;
+            let spec =
+                specyfikacje::kopiuj_specyfikacje_w(&mut tx, p.wersja.specyfikacja_id).await?;
             // Miejsce montażu: inwestycja oferty albo nowa – z adresu inwestycji z oferty.
             let oferta_inw: Option<Option<i64>> =
                 sqlx::query_scalar("SELECT inwestycja_id FROM oferty WHERE id = ?1")
@@ -1262,8 +1305,12 @@ pub async fn dodaj(pula: &SqlitePool, d: DaneNowejUmowy) -> Wynik<PelnaUmowa> {
             let inw = match oferta_inw.flatten() {
                 Some(i) => Some(i),
                 None => Some(
-                    nowa_inwestycja(&mut tx, p.oferta.klient_id, p.wersja.adres_inwestycji.as_deref())
-                        .await?,
+                    nowa_inwestycja(
+                        &mut tx,
+                        p.oferta.klient_id,
+                        p.wersja.adres_inwestycji.as_deref(),
+                    )
+                    .await?,
                 ),
             };
             (
@@ -1293,7 +1340,14 @@ pub async fn dodaj(pula: &SqlitePool, d: DaneNowejUmowy) -> Wynik<PelnaUmowa> {
             )
             .fetch_optional(&mut *tx)
             .await?;
-            (kid, spec, None, None, stawka.filter(|s| *s == 8 || *s == 23), Some(inw))
+            (
+                kid,
+                spec,
+                None,
+                None,
+                stawka.filter(|s| *s == 8 || *s == 23),
+                Some(inw),
+            )
         }
         (None, None) => {
             return Err(BladApi::NieprawidloweDane(
@@ -1340,17 +1394,21 @@ pub async fn dodaj(pula: &SqlitePool, d: DaneNowejUmowy) -> Wynik<PelnaUmowa> {
     Ok(p)
 }
 
-async fn nowa_inwestycja(db: &mut SqliteConnection, klient_id: i64, adres: Option<&str>) -> Wynik<i64> {
+async fn nowa_inwestycja(
+    db: &mut SqliteConnection,
+    klient_id: i64,
+    adres: Option<&str>,
+) -> Wynik<i64> {
     let adres = adres.map(str::trim).filter(|a| !a.is_empty());
-    Ok(sqlx::query(
-        "INSERT INTO inwestycje (klient_id, nazwa, adres_ulica) VALUES (?1, ?2, ?3)",
+    Ok(
+        sqlx::query("INSERT INTO inwestycje (klient_id, nazwa, adres_ulica) VALUES (?1, ?2, ?3)")
+            .bind(klient_id)
+            .bind(adres.unwrap_or("Miejsce montażu"))
+            .bind(adres)
+            .execute(&mut *db)
+            .await?
+            .last_insert_rowid(),
     )
-    .bind(klient_id)
-    .bind(adres.unwrap_or("Miejsce montażu"))
-    .bind(adres)
-    .execute(&mut *db)
-    .await?
-    .last_insert_rowid())
 }
 
 // ---------------------------------------------------------------------------
@@ -1366,7 +1424,11 @@ pub async fn zmien(pula: &SqlitePool, id: i64, tresc: Value) -> Wynik<PelnaUmowa
     let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let u = pobierz_w(&mut tx, id).await?;
     if u.tylko_do_odczytu {
-        if let Some(pole) = z.zmiany.keys().find(|k| !POLA_WEWNETRZNE.contains(&k.as_str())) {
+        if let Some(pole) = z
+            .zmiany
+            .keys()
+            .find(|k| !POLA_WEWNETRZNE.contains(&k.as_str()))
+        {
             return Err(BladApi::NieprawidloweDane(format!(
                 "{} – nie można zmienić pola „{}”",
                 u.powod_blokady.clone().unwrap_or_default(),
@@ -1378,9 +1440,13 @@ pub async fn zmien(pula: &SqlitePool, id: i64, tresc: Value) -> Wynik<PelnaUmowa
     z.sprawdz(&do_json(&baza), do_json(&u), &nazwa_pola)?;
     let d = z.zastosuj(&baza)?.oczysc()?;
     if d.numer.is_none() {
-        return Err(BladApi::NieprawidloweDane("numer umowy jest wymagany".into()));
+        return Err(BladApi::NieprawidloweDane(
+            "numer umowy jest wymagany".into(),
+        ));
     }
-    let klient_id = d.klient_id.ok_or_else(|| BladApi::NieprawidloweDane("klient jest wymagany".into()))?;
+    let klient_id = d
+        .klient_id
+        .ok_or_else(|| BladApi::NieprawidloweDane("klient jest wymagany".into()))?;
     if d.klient_id != baza.klient_id {
         let ok: Option<i64> =
             sqlx::query_scalar("SELECT id FROM klienci WHERE id = ?1 AND usunieto IS NULL")
@@ -1388,7 +1454,9 @@ pub async fn zmien(pula: &SqlitePool, id: i64, tresc: Value) -> Wynik<PelnaUmowa
                 .fetch_optional(&mut *tx)
                 .await?;
         if ok.is_none() {
-            return Err(BladApi::NieprawidloweDane(format!("nie ma klienta {klient_id}")));
+            return Err(BladApi::NieprawidloweDane(format!(
+                "nie ma klienta {klient_id}"
+            )));
         }
     }
     // Numer: unikalny (bez względu na wielkość liter); rok i numer kolejny z formatu, jeśli pasuje.
@@ -1669,7 +1737,11 @@ pub async fn migawka_w(db: &mut SqliteConnection, u: &Umowa) -> Wynik<MigawkaUmo
 
 /// Zapis planu do `platnosci_planowane` – w miejscu (po rodzaju i kolejności), żeby zadania
 /// kalendarza `platnosc:<id>` zachowały identyfikatory i stan wykonania.
-pub async fn zapisz_plan_w(db: &mut SqliteConnection, umowa_id: i64, plan: &PlanPlatnosci) -> Wynik<()> {
+pub async fn zapisz_plan_w(
+    db: &mut SqliteConnection,
+    umowa_id: i64,
+    plan: &PlanPlatnosci,
+) -> Wynik<()> {
     let stare = platnosci_w(db, umowa_id).await?;
     let mut uzyte = BTreeSet::new();
     for (i, p) in plan.pozycje.iter().enumerate() {
@@ -1721,7 +1793,11 @@ pub async fn zapisz_plan_w(db: &mut SqliteConnection, umowa_id: i64, plan: &Plan
     Ok(())
 }
 
-pub async fn zmien_status(pula: &SqlitePool, id: i64, z: ZmianaStatusuUmowy) -> Wynik<WynikStatusu> {
+pub async fn zmien_status(
+    pula: &SqlitePool,
+    id: i64,
+    z: ZmianaStatusuUmowy,
+) -> Wynik<WynikStatusu> {
     if !STATUSY_UMOWY.contains(&z.status.as_str()) {
         return Err(BladApi::NieprawidloweDane(format!(
             "nieznany status „{}” (dozwolone: {})",
@@ -1807,10 +1883,11 @@ pub async fn zmien_status(pula: &SqlitePool, id: i64, z: ZmianaStatusuUmowy) -> 
                 .bind(id)
                 .execute(&mut *tx)
                 .await?;
-            let zid: Option<i64> = sqlx::query_scalar("SELECT id FROM zlecenia WHERE umowa_id = ?1")
-                .bind(id)
-                .fetch_optional(&mut *tx)
-                .await?;
+            let zid: Option<i64> =
+                sqlx::query_scalar("SELECT id FROM zlecenia WHERE umowa_id = ?1")
+                    .bind(id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
             if let Some(zid) = zid {
                 // niewykonane zadania wyliczone znikają z kalendarza, wykonane zostają jako historia
                 sqlx::query("DELETE FROM zadania_kalendarza WHERE zlecenie_id = ?1 AND wykonano IS NULL AND wyliczone = 1")
@@ -1977,7 +2054,11 @@ pub async fn po_podpisaniu_w(
 /// Zamówienia materiałów zlecenia z kategorii wierszy specyfikacji (bez pozycji po stronie
 /// klienta i poza wyceną). Dodaje brakujące kategorie, a usuwa tylko niezamówione materiały
 /// dodane wcześniej automatycznie, których kategorii już nie ma. Zwraca liczbę dodanych.
-pub async fn synchronizuj_materialy_w(db: &mut SqliteConnection, zid: i64, spec_id: i64) -> Wynik<usize> {
+pub async fn synchronizuj_materialy_w(
+    db: &mut SqliteConnection,
+    zid: i64,
+    spec_id: i64,
+) -> Wynik<usize> {
     const ZNACZNIK: &str = "Ze specyfikacji umowy";
     let wiersze: Vec<(i64, Option<String>)> = sqlx::query_as(
         "SELECT w.kategoria_materialu_id, w.material FROM wiersze_specyfikacji w \
@@ -2012,7 +2093,9 @@ pub async fn synchronizuj_materialy_w(db: &mut SqliteConnection, zid: i64, spec_
         match istniejace.iter().find(|m| m.1 == *k) {
             Some((mid, _, stary_opis, zam)) => {
                 if zam.is_none()
-                    && stary_opis.as_deref().is_some_and(|o| o.starts_with(ZNACZNIK))
+                    && stary_opis
+                        .as_deref()
+                        .is_some_and(|o| o.starts_with(ZNACZNIK))
                     && stary_opis.as_deref() != Some(opis.as_str())
                 {
                     sqlx::query("UPDATE zamowienia_materialow SET opis = ?1 WHERE id = ?2")
@@ -2131,9 +2214,15 @@ pub async fn osoby_kontaktowe(pula: &SqlitePool, klient_id: i64) -> Wynik<Vec<Os
 }
 
 /// Zastępuje listę osób kontaktowych klienta.
-pub async fn zapisz_osoby_kontaktowe(pula: &SqlitePool, klient_id: i64, d: DaneOsob) -> Wynik<Vec<OsobaKontaktowa>> {
+pub async fn zapisz_osoby_kontaktowe(
+    pula: &SqlitePool,
+    klient_id: i64,
+    d: DaneOsob,
+) -> Wynik<Vec<OsobaKontaktowa>> {
     if d.osoby.len() > 50 {
-        return Err(BladApi::NieprawidloweDane("najwyżej 50 osób kontaktowych".into()));
+        return Err(BladApi::NieprawidloweDane(
+            "najwyżej 50 osób kontaktowych".into(),
+        ));
     }
     for o in &d.osoby {
         if o.imie_nazwisko.trim().is_empty() {

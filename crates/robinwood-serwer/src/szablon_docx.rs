@@ -51,7 +51,8 @@ impl DaneSzablonu {
         self.warunki.insert(normalizuj(nazwa), tak);
     }
     pub fn alias(&mut self, inna_nazwa: &str, nazwa: &str) {
-        self.aliasy.insert(normalizuj(inna_nazwa), normalizuj(nazwa));
+        self.aliasy
+            .insert(normalizuj(inna_nazwa), normalizuj(nazwa));
     }
     pub fn pomin(&mut self, nazwa: &str) {
         self.pomijane.push(normalizuj(nazwa));
@@ -165,7 +166,12 @@ pub mod xml {
     }
 
     /// Akapit; `wyrownanie`: `left`/`center`/`right`/`both`; `odstep_po` w twipach.
-    pub fn akapit(przebiegi: &str, wyrownanie: Option<&str>, odstep_po: Option<u32>, z_nastepnym: bool) -> String {
+    pub fn akapit(
+        przebiegi: &str,
+        wyrownanie: Option<&str>,
+        odstep_po: Option<u32>,
+        z_nastepnym: bool,
+    ) -> String {
         let mut ppr = String::new();
         if z_nastepnym {
             ppr.push_str("<w:keepNext/>");
@@ -265,7 +271,9 @@ pub mod xml {
                 let n = k.scal.max(1) as usize;
                 let szer: u32 = szerokosci.iter().skip(kol).take(n).sum();
                 kol += n;
-                s.push_str(&format!("<w:tc><w:tcPr><w:tcW w:w=\"{szer}\" w:type=\"dxa\"/>"));
+                s.push_str(&format!(
+                    "<w:tc><w:tcPr><w:tcW w:w=\"{szer}\" w:type=\"dxa\"/>"
+                ));
                 if n > 1 {
                     s.push_str(&format!("<w:gridSpan w:val=\"{n}\"/>"));
                 }
@@ -340,7 +348,9 @@ fn wezly_tekstu(x: &str) -> Vec<WezelT> {
                     continue;
                 }
                 let od = i + kon + 1;
-                let Some(z) = x[od..].find("</w:t>") else { break };
+                let Some(z) = x[od..].find("</w:t>") else {
+                    break;
+                };
                 wynik.push(WezelT {
                     otwarcie: i,
                     od,
@@ -391,7 +401,13 @@ fn zakresy_pol(c: &str) -> Vec<(usize, usize)> {
                 wynik.push((i, k));
                 i = k;
             }
-            _ => i = if j > i + 1 && j < b.len() && b[j] == b'[' { j } else { i + 1 },
+            _ => {
+                i = if j > i + 1 && j < b.len() && b[j] == b'[' {
+                    j
+                } else {
+                    i + 1
+                }
+            }
         }
     }
     wynik
@@ -532,7 +548,11 @@ fn zrownowazony(f: &str) -> bool {
 }
 
 /// Pozycje znacznika (tekst) w xml – tylko wewnątrz treści `w:t`.
-fn znajdz_znacznik(x: &str, od: usize, pasuje: &dyn Fn(&str) -> bool) -> Option<(usize, usize, String)> {
+fn znajdz_znacznik(
+    x: &str,
+    od: usize,
+    pasuje: &dyn Fn(&str) -> bool,
+) -> Option<(usize, usize, String)> {
     for w in wezly_tekstu(x) {
         if w.do_ <= od {
             continue;
@@ -673,7 +693,10 @@ fn wstaw_bloki(mut x: String, dane: &DaneSzablonu, r: &mut RaportSzablonu, glown
     let mut od = 0;
     for _ in 0..1000 {
         let Some((s, e, zn)) = znajdz_znacznik(&x, od, &|t| {
-            !t.starts_with("[[") && dane.bloki.contains_key(&dane.klucz(&xml::unescape(&t[1..t.len() - 1])))
+            !t.starts_with("[[")
+                && dane
+                    .bloki
+                    .contains_key(&dane.klucz(&xml::unescape(&t[1..t.len() - 1])))
         }) else {
             break;
         };
@@ -789,7 +812,9 @@ fn kontrolki_tresci(x: &str, dane: &DaneSzablonu, r: &mut RaportSzablonu, glowna
             (None, Some(b)) => poz + b,
             (None, None) => break,
         };
-        let Some(koniec) = koniec_sdt(x, start) else { break };
+        let Some(koniec) = koniec_sdt(x, start) else {
+            break;
+        };
         let sdt = &x[start..koniec];
         let pr_do = sdt.find("</w:sdtPr>").unwrap_or(0);
         let pr = &sdt[..pr_do];
@@ -820,7 +845,8 @@ fn kontrolki_tresci(x: &str, dane: &DaneSzablonu, r: &mut RaportSzablonu, glowna
                 &sdt[od..do_.max(od)]
             })
             .unwrap_or("");
-        let blokowa = tresc.contains("<w:p>") || tresc.contains("<w:p ") || tresc.contains("<w:tbl>");
+        let blokowa =
+            tresc.contains("<w:p>") || tresc.contains("<w:p ") || tresc.contains("<w:tbl>");
         let rpr = tresc
             .find("<w:rPr>")
             .and_then(|i| tresc[i..].find("</w:rPr>").map(|k| &tresc[i..i + k + 8]))
@@ -948,7 +974,9 @@ pub fn rozpakuj(docx: &[u8]) -> Wynik<Vec<(String, Vec<u8>)>> {
         }
         lacznie += p.size();
         if lacznie > 200 * 1024 * 1024 {
-            return Err(BladApi::ZaDuzo("szablon po rozpakowaniu przekracza 200 MB".into()));
+            return Err(BladApi::ZaDuzo(
+                "szablon po rozpakowaniu przekracza 200 MB".into(),
+            ));
         }
         let mut b = Vec::with_capacity(p.size() as usize);
         p.read_to_end(&mut b).map_err(blad_pliku)?;
@@ -1133,7 +1161,10 @@ mod testy {
         d.pole("klient", "Jan <Testowy> & Syn");
         d.pole("piętro", "");
         d.pole("adres klienta", "ul. Testowa 1\n00-001 Miasto");
-        d.blok("specyfikacja", xml::akapit_tekst("TABELA SPECYFIKACJI [x]", true));
+        d.blok(
+            "specyfikacja",
+            xml::akapit_tekst("TABELA SPECYFIKACJI [x]", true),
+        );
         d.warunek("załącznik 3", false);
         d.warunek("załącznik 6", true);
         d
@@ -1169,7 +1200,8 @@ mod testy {
 
     #[test]
     fn nieznane_puste_i_wieloliniowe() {
-        let body = "<w:p><w:r><w:t>[zupełnie nowe pole] [piętro] [1] [adres klienta]</w:t></w:r></w:p>";
+        let body =
+            "<w:p><w:r><w:t>[zupełnie nowe pole] [piętro] [1] [adres klienta]</w:t></w:r></w:p>";
         let (wynik, r) = wypelnij(&dokument(body), &dane(), None).unwrap();
         let doc = czesc(&wynik, "word/document.xml");
         assert!(doc.contains("[zupełnie nowe pole]"));
@@ -1208,7 +1240,10 @@ mod testy {
         // makra usunięte
         let typy = czesc(&wynik, "[Content_Types].xml");
         assert!(!typy.contains("macroEnabled") && !typy.contains("vbaProject"));
-        assert!(rozpakuj(&wynik).unwrap().iter().all(|(n, _)| !n.contains("vba")));
+        assert!(rozpakuj(&wynik)
+            .unwrap()
+            .iter()
+            .all(|(n, _)| !n.contains("vba")));
     }
 
     #[test]
@@ -1227,11 +1262,16 @@ mod testy {
         assert!(t.contains("Umowa nr 7/2027 [uzupełnij]"), "{t}");
         assert!(t.contains("TABELA SPECYFIKACJI"), "{t}");
         assert!(!doc.contains("dataBinding") && !t.contains("Uruchom"));
-        assert!(doc.contains("<w:color w:val=\"FF3333\"/></w:rPr><w:t xml:space=\"preserve\">7/2027"));
+        assert!(
+            doc.contains("<w:color w:val=\"FF3333\"/></w:rPr><w:t xml:space=\"preserve\">7/2027")
+        );
         assert_eq!(r.kontrolki, 2);
         assert_eq!(r.do_uzupelnienia, 1);
         assert!(r.nieznane.is_empty(), "{:?}", r.nieznane);
-        assert!(doc.contains("<w:tag w:val=\"cos\"/>"), "nieznana kontrolka zostaje");
+        assert!(
+            doc.contains("<w:tag w:val=\"cos\"/>"),
+            "nieznana kontrolka zostaje"
+        );
         assert!(zrownowazony(&doc));
     }
 

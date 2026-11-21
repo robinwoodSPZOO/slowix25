@@ -41,13 +41,28 @@ pub struct OpisPola {
 }
 
 const fn p(nazwa: &'static str, opis: &'static str) -> OpisPola {
-    OpisPola { nazwa, opis, rodzaj: "tekst", dokument: "oba" }
+    OpisPola {
+        nazwa,
+        opis,
+        rodzaj: "tekst",
+        dokument: "oba",
+    }
 }
 const fn pu(nazwa: &'static str, opis: &'static str) -> OpisPola {
-    OpisPola { nazwa, opis, rodzaj: "tekst", dokument: "umowa" }
+    OpisPola {
+        nazwa,
+        opis,
+        rodzaj: "tekst",
+        dokument: "umowa",
+    }
 }
 const fn pa(nazwa: &'static str, opis: &'static str) -> OpisPola {
-    OpisPola { nazwa, opis, rodzaj: "tekst", dokument: "aneks" }
+    OpisPola {
+        nazwa,
+        opis,
+        rodzaj: "tekst",
+        dokument: "aneks",
+    }
 }
 
 pub const POLA: &[OpisPola] = &[
@@ -201,7 +216,10 @@ fn linia_adresu(ulica: &Option<String>, kod: &Option<String>, miasto: &Option<St
 fn pola_stron(d: &mut DaneSzablonu, m: &MigawkaUmowy) {
     let z = &m.zamawiajacy;
     d.pole("klient", z.nazwa.clone());
-    d.pole("adres klienta", linia_adresu(&z.adres_ulica, &z.adres_kod, &z.adres_miasto));
+    d.pole(
+        "adres klienta",
+        linia_adresu(&z.adres_ulica, &z.adres_kod, &z.adres_miasto),
+    );
     d.pole("e-mail", z.email.clone().unwrap_or_default());
     d.pole("telefon", z.telefon.clone().unwrap_or_default());
     d.pole("nip klienta", z.nip.clone().unwrap_or_default());
@@ -211,7 +229,10 @@ fn pola_stron(d: &mut DaneSzablonu, m: &MigawkaUmowy) {
             .iter()
             .map(|o| {
                 let mut s = o.imie_nazwisko.clone();
-                let kontakt: Vec<String> = [o.telefon.clone(), o.email.clone()].into_iter().flatten().collect();
+                let kontakt: Vec<String> = [o.telefon.clone(), o.email.clone()]
+                    .into_iter()
+                    .flatten()
+                    .collect();
                 if !kontakt.is_empty() {
                     s.push_str(&format!(" ({})", kontakt.join(", ")));
                 }
@@ -229,7 +250,10 @@ fn pola_stron(d: &mut DaneSzablonu, m: &MigawkaUmowy) {
     d.pole("bank", m.wykonawca_bank.clone());
     d.pole("numer rachunku", m.wykonawca_rachunek.clone());
     d.pole("swift", m.wykonawca_swift.clone());
-    d.pole("data wydruku", formaty::data(&umowy::dzis().format("%Y-%m-%d").to_string()));
+    d.pole(
+        "data wydruku",
+        formaty::data(&umowy::dzis().format("%Y-%m-%d").to_string()),
+    );
     for (a, n) in ALIASY {
         d.alias(a, n);
     }
@@ -250,7 +274,12 @@ pub fn blok_specyfikacji(s: &Specyfikacja) -> String {
             (None, Some(w)) => format!("{} ({w})", sek.nazwa),
             (None, None) => sek.nazwa.clone(),
         };
-        x.push_str(&xml::akapit(&xml::przebieg(&tytul, true, Some(24)), None, Some(80), true));
+        x.push_str(&xml::akapit(
+            &xml::przebieg(&tytul, true, Some(24)),
+            None,
+            Some(80),
+            true,
+        ));
         let szer: &[u32] = if agd {
             &[1700, 2300, 3100, 1000, 1500]
         } else {
@@ -260,7 +289,12 @@ pub fn blok_specyfikacji(s: &Specyfikacja) -> String {
             if c.wiersze.is_empty() {
                 continue;
             }
-            x.push_str(&xml::akapit(&xml::przebieg(&c.nazwa, true, Some(20)), None, Some(40), true));
+            x.push_str(&xml::akapit(
+                &xml::przebieg(&c.nazwa, true, Some(20)),
+                None,
+                Some(40),
+                true,
+            ));
             let mut naglowek = vec![
                 Komorka::naglowek("Rodzaj"),
                 Komorka::naglowek("Materiał"),
@@ -271,17 +305,36 @@ pub fn blok_specyfikacji(s: &Specyfikacja) -> String {
                 naglowek.push(Komorka::naglowek("Wartość").do_prawej());
             }
             let mut wiersze = vec![(true, naglowek)];
-            for (podgrupa, etykieta) in [("glowna", None), ("frezowanie", Some("Frezowanie")), ("wyposazenie", Some("Wyposażenie"))] {
-                let ws: Vec<_> = c.wiersze.iter().filter(|w| w.podgrupa == podgrupa).collect();
+            for (podgrupa, etykieta) in [
+                ("glowna", None),
+                ("frezowanie", Some("Frezowanie")),
+                ("wyposazenie", Some("Wyposażenie")),
+            ] {
+                let ws: Vec<_> = c
+                    .wiersze
+                    .iter()
+                    .filter(|w| w.podgrupa == podgrupa)
+                    .collect();
                 if ws.is_empty() {
                     continue;
                 }
                 if let Some(e) = etykieta {
-                    wiersze.push((false, vec![Komorka::t(e).pogrubiona().tlo("F4F3F0").scalona(szer.len() as u32)]));
+                    wiersze.push((
+                        false,
+                        vec![Komorka::t(e)
+                            .pogrubiona()
+                            .tlo("F4F3F0")
+                            .scalona(szer.len() as u32)],
+                    ));
                 }
                 for w in ws {
                     let d = crate::eksport::wiersz_dok(w, agd);
-                    let mut k = vec![Komorka::t(d.rodzaj), Komorka::t(d.material), Komorka::t(d.opis), Komorka::t(d.ilosc)];
+                    let mut k = vec![
+                        Komorka::t(d.rodzaj),
+                        Komorka::t(d.material),
+                        Komorka::t(d.opis),
+                        Komorka::t(d.ilosc),
+                    ];
                     if agd {
                         k.push(Komorka::t(d.cena.unwrap_or_default()).do_prawej());
                     }
@@ -314,7 +367,11 @@ fn blok_harmonogramu_platnosci(p: &PelnaUmowa) -> String {
             false,
             vec![
                 Komorka::t(format!("{}.", i + 1)),
-                Komorka::t(format!("{}\n(słownie: {})", r.opis, slownie::kwota(r.kwota_gr))),
+                Komorka::t(format!(
+                    "{}\n(słownie: {})",
+                    r.opis,
+                    slownie::kwota(r.kwota_gr)
+                )),
                 Komorka::t(formaty::kwota(r.kwota_gr)).do_prawej(),
                 Komorka::t(termin),
             ],
@@ -324,12 +381,17 @@ fn blok_harmonogramu_platnosci(p: &PelnaUmowa) -> String {
         false,
         vec![
             Komorka::t("Razem").pogrubiona().scalona(2),
-            Komorka::t(formaty::kwota(p.plan.suma_gr)).pogrubiona().do_prawej(),
+            Komorka::t(formaty::kwota(p.plan.suma_gr))
+                .pogrubiona()
+                .do_prawej(),
             Komorka::t(""),
         ],
     ));
     if p.plan.pozycje.is_empty() {
-        return xml::akapit_tekst("(plan płatności niekompletny – uzupełnij wartość, zadatek i wariant)", false);
+        return xml::akapit_tekst(
+            "(plan płatności niekompletny – uzupełnij wartość, zadatek i wariant)",
+            false,
+        );
     }
     xml::tabela(&[600, 4400, 1800, 2800], &wiersze)
 }
@@ -362,7 +424,9 @@ fn blok_etapow(p: &PelnaUmowa) -> String {
         false,
         vec![
             Komorka::t("Suma").pogrubiona().scalona(3),
-            Komorka::t(formaty::kwota(p.kontrola_etapow.suma_gr)).pogrubiona().do_prawej(),
+            Komorka::t(formaty::kwota(p.kontrola_etapow.suma_gr))
+                .pogrubiona()
+                .do_prawej(),
         ],
     ));
     xml::tabela(&[600, 5000, 2000, 2000], &wiersze)
@@ -384,37 +448,89 @@ pub async fn dane_umowy(pula: &SqlitePool, p: &PelnaUmowa) -> Wynik<DaneSzablonu
     d.pole("numer umowy", u.numer());
     d.pole("miejscowość", dn.miejscowosc.clone().unwrap_or_default());
     d.pole("data umowy", data_opc(&dn.data_zawarcia));
-    d.pole("adres montażu", linia_adresu(&dn.montaz_ulica, &dn.montaz_kod, &dn.montaz_miasto));
+    d.pole(
+        "adres montażu",
+        linia_adresu(&dn.montaz_ulica, &dn.montaz_kod, &dn.montaz_miasto),
+    );
     d.pole("piętro", dn.montaz_pietro.clone().unwrap_or_default());
-    d.pole("kod domofonu", dn.montaz_kod_domofonu.clone().unwrap_or_default());
+    d.pole(
+        "kod domofonu",
+        dn.montaz_kod_domofonu.clone().unwrap_or_default(),
+    );
     d.pole("parking", dn.montaz_parking.clone().unwrap_or_default());
-    d.pole("wniesienie", dn.montaz_winda_wniesienie.clone().unwrap_or_default());
+    d.pole(
+        "wniesienie",
+        dn.montaz_winda_wniesienie.clone().unwrap_or_default(),
+    );
     d.pole(
         "liczba dni",
-        dn.dni_na_brakujace_informacje.map(|n| n.to_string()).unwrap_or_default(),
+        dn.dni_na_brakujace_informacje
+            .map(|n| n.to_string())
+            .unwrap_or_default(),
     );
     d.pole("wartość", kwota_opc(dn.wartosc_brutto_gr));
-    d.pole("kwota słownie", dn.wartosc_brutto_gr.map(slownie::kwota).unwrap_or_default());
-    d.pole("stawka VAT", dn.stawka_vat.map(|s| s.to_string()).unwrap_or_default());
+    d.pole(
+        "kwota słownie",
+        dn.wartosc_brutto_gr.map(slownie::kwota).unwrap_or_default(),
+    );
+    d.pole(
+        "stawka VAT",
+        dn.stawka_vat.map(|s| s.to_string()).unwrap_or_default(),
+    );
     d.pole("zadatek", kwota_opc(dn.zadatek_gr));
-    d.pole("zadatek słownie", dn.zadatek_gr.map(slownie::kwota).unwrap_or_default());
+    d.pole(
+        "zadatek słownie",
+        dn.zadatek_gr.map(slownie::kwota).unwrap_or_default(),
+    );
     let zadatek = p.plan.pozycje.iter().find(|x| x.rodzaj == "zadatek");
     d.pole(
         "termin zadatku",
-        zadatek.map(|z| data_opc(&z.termin)).unwrap_or_else(|| data_opc(&dn.termin_zadatku)),
+        zadatek
+            .map(|z| data_opc(&z.termin))
+            .unwrap_or_else(|| data_opc(&dn.termin_zadatku)),
     );
-    d.pole("wariant A lub B", dn.wariant_platnosci.clone().unwrap_or_default());
+    d.pole(
+        "wariant A lub B",
+        dn.wariant_platnosci.clone().unwrap_or_default(),
+    );
     let przed = p.plan.pozycje.iter().find(|x| x.rodzaj == "przed_montazem");
-    d.pole("kwota przed montażem", przed.map(|x| kwota_bez_zl(x.kwota_gr)).unwrap_or_default());
-    d.pole("kwota przed montażem słownie", przed.map(|x| slownie::kwota(x.kwota_gr)).unwrap_or_default());
-    d.pole("termin kwoty przed montażem", przed.map(|x| data_opc(&x.termin)).unwrap_or_default());
+    d.pole(
+        "kwota przed montażem",
+        przed.map(|x| kwota_bez_zl(x.kwota_gr)).unwrap_or_default(),
+    );
+    d.pole(
+        "kwota przed montażem słownie",
+        przed
+            .map(|x| slownie::kwota(x.kwota_gr))
+            .unwrap_or_default(),
+    );
+    d.pole(
+        "termin kwoty przed montażem",
+        przed.map(|x| data_opc(&x.termin)).unwrap_or_default(),
+    );
     let koncowa = p.plan.pozycje.iter().find(|x| x.rodzaj == "koncowa");
-    d.pole("pozostała kwota", koncowa.map(|x| kwota_bez_zl(x.kwota_gr)).unwrap_or_default());
-    d.pole("pozostała kwota słownie", koncowa.map(|x| slownie::kwota(x.kwota_gr)).unwrap_or_default());
+    d.pole(
+        "pozostała kwota",
+        koncowa
+            .map(|x| kwota_bez_zl(x.kwota_gr))
+            .unwrap_or_default(),
+    );
+    d.pole(
+        "pozostała kwota słownie",
+        koncowa
+            .map(|x| slownie::kwota(x.kwota_gr))
+            .unwrap_or_default(),
+    );
     d.pole(
         "termin pozostałej kwoty",
         koncowa
-            .map(|x| if x.szacunkowy { x.termin_opis.clone() } else { data_opc(&x.termin) })
+            .map(|x| {
+                if x.szacunkowy {
+                    x.termin_opis.clone()
+                } else {
+                    data_opc(&x.termin)
+                }
+            })
             .unwrap_or_default(),
     );
     d.pole("termin montażu", data_opc(&dn.montaz_do));
@@ -429,13 +545,30 @@ pub async fn dane_umowy(pula: &SqlitePool, p: &PelnaUmowa) -> Wynik<DaneSzablonu
             .join(", "),
     );
     let rodzaj = dn.vat_rodzaj_nieruchomosci.as_deref().unwrap_or("");
-    d.pole("rodzaj nieruchomości", umowy::nazwa_rodzaju_nieruchomosci(rodzaj));
-    d.pole("powierzchnia", dn.vat_powierzchnia_m2.map(formaty::ilosc).unwrap_or_default());
-    d.pole("podstawa powierzchni", dn.vat_podstawa_powierzchni.clone().unwrap_or_default());
+    d.pole(
+        "rodzaj nieruchomości",
+        umowy::nazwa_rodzaju_nieruchomosci(rodzaj),
+    );
+    d.pole(
+        "powierzchnia",
+        dn.vat_powierzchnia_m2
+            .map(formaty::ilosc)
+            .unwrap_or_default(),
+    );
+    d.pole(
+        "podstawa powierzchni",
+        dn.vat_podstawa_powierzchni.clone().unwrap_or_default(),
+    );
     d.pole("VAT lokal", pole_wyboru(rodzaj == "lokal_mieszkalny"));
     d.pole("VAT dom", pole_wyboru(rodzaj == "dom_jednorodzinny"));
     d.pole("VAT inny", pole_wyboru(rodzaj == "inny"));
-    d.pole("data odbioru", p.protokol.as_ref().map(|x| formaty::data(&x.data)).unwrap_or_default());
+    d.pole(
+        "data odbioru",
+        p.protokol
+            .as_ref()
+            .map(|x| formaty::data(&x.data))
+            .unwrap_or_default(),
+    );
     d.pole("wpłacono", kwota_bez_zl(p.saldo.wplacono_gr));
     d.pole("pozostało", kwota_bez_zl(p.saldo.pozostalo_gr.max(0)));
     d.pole(
@@ -450,7 +583,13 @@ pub async fn dane_umowy(pula: &SqlitePool, p: &PelnaUmowa) -> Wynik<DaneSzablonu
     let bez_uwag = p.protokol.as_ref().map(|x| x.bez_zastrzezen);
     d.pole("odbiór bez uwag", pole_wyboru(bez_uwag == Some(true)));
     d.pole("odbiór z uwagami", pole_wyboru(bez_uwag == Some(false)));
-    d.pole("uwagi do odbioru", p.protokol.as_ref().and_then(|x| x.uwagi.clone()).unwrap_or_default());
+    d.pole(
+        "uwagi do odbioru",
+        p.protokol
+            .as_ref()
+            .and_then(|x| x.uwagi.clone())
+            .unwrap_or_default(),
+    );
     d.pole("data zgody", data_opc(&dn.data_zawarcia));
 
     d.blok("specyfikacja", blok_specyfikacji(&p.specyfikacja));
@@ -459,7 +598,10 @@ pub async fn dane_umowy(pula: &SqlitePool, p: &PelnaUmowa) -> Wynik<DaneSzablonu
 
     let zal = dn.zalaczniki.clone().unwrap_or_default();
     for n in 1..=6 {
-        d.warunek(&format!("załącznik {n}"), zal.iter().any(|z| z == &n.to_string()));
+        d.warunek(
+            &format!("załącznik {n}"),
+            zal.iter().any(|z| z == &n.to_string()),
+        );
     }
     let wariant = dn.wariant_platnosci.as_deref();
     d.warunek("wariant A", wariant == Some("A"));
@@ -477,14 +619,27 @@ pub async fn dane_aneksu(pula: &SqlitePool, a: &PelnyAneks) -> Wynik<DaneSzablon
     d.pole("data aneksu", data_opc(&an.data));
     d.pole("opis zmian", an.opis_zmian.clone());
     let znak = if an.zmiana_ceny_gr > 0 { "+" } else { "" };
-    d.pole("zmiana kwoty", format!("{znak}{}", kwota_bez_zl(an.zmiana_ceny_gr)));
+    d.pole(
+        "zmiana kwoty",
+        format!("{znak}{}", kwota_bez_zl(an.zmiana_ceny_gr)),
+    );
     d.pole("poprzednia wartość", kwota_opc(an.poprzednia_wartosc_gr));
     d.pole("nowa wartość", kwota_opc(a.nowa_wartosc_gr));
-    d.pole("nowa wartość słownie", a.nowa_wartosc_gr.map(slownie::kwota).unwrap_or_default());
-    d.pole("poprzedni termin montażu", data_opc(&an.poprzedni_termin_montazu));
+    d.pole(
+        "nowa wartość słownie",
+        a.nowa_wartosc_gr.map(slownie::kwota).unwrap_or_default(),
+    );
+    d.pole(
+        "poprzedni termin montażu",
+        data_opc(&an.poprzedni_termin_montazu),
+    );
     d.pole(
         "nowy termin montażu",
-        data_opc(&an.nowy_termin_montazu.clone().or(an.poprzedni_termin_montazu.clone())),
+        data_opc(
+            &an.nowy_termin_montazu
+                .clone()
+                .or(an.poprzedni_termin_montazu.clone()),
+        ),
     );
     let lista: String = if a.lista_zmian.is_empty() {
         xml::akapit_tekst("(brak zmian)", false)
@@ -492,7 +647,14 @@ pub async fn dane_aneksu(pula: &SqlitePool, a: &PelnyAneks) -> Wynik<DaneSzablon
         a.lista_zmian
             .iter()
             .enumerate()
-            .map(|(i, z)| xml::akapit(&xml::przebieg(&format!("{}. {z}", i + 1), false, None), None, Some(60), false))
+            .map(|(i, z)| {
+                xml::akapit(
+                    &xml::przebieg(&format!("{}. {z}", i + 1), false, None),
+                    None,
+                    Some(60),
+                    false,
+                )
+            })
             .collect()
     };
     d.blok("lista zmian", lista);
@@ -528,12 +690,31 @@ fn dokument_przykladowy(tresc: Vec<Paragraph>, stopka: &str) -> Wynik<Vec<u8>> {
     );
     let mut d = Docx::new()
         .page_size(11_906, 16_838)
-        .page_margin(PageMargin::new().top(1_000).bottom(1_000).left(1_134).right(1_134))
-        .default_fonts(RunFonts::new().ascii("Calibri").hi_ansi("Calibri").cs("Arial").east_asia("Arial"))
+        .page_margin(
+            PageMargin::new()
+                .top(1_000)
+                .bottom(1_000)
+                .left(1_134)
+                .right(1_134),
+        )
+        .default_fonts(
+            RunFonts::new()
+                .ascii("Calibri")
+                .hi_ansi("Calibri")
+                .cs("Arial")
+                .east_asia("Arial"),
+        )
         .default_size(21)
-        .header(Header::new().add_paragraph(
-            Paragraph::new().add_run(Run::new().add_text(format!("{ZNAK_PRZYKLADU} · umowa nr [numer umowy]")).color("C00000").size(16)),
-        ))
+        .header(
+            Header::new().add_paragraph(
+                Paragraph::new().add_run(
+                    Run::new()
+                        .add_text(format!("{ZNAK_PRZYKLADU} · umowa nr [numer umowy]"))
+                        .color("C00000")
+                        .size(16),
+                ),
+            ),
+        )
         .footer(Footer::new().add_paragraph(
             Paragraph::new().add_run(Run::new().add_text(stopka).color("888888").size(16)),
         ))
@@ -640,7 +821,10 @@ pub fn szablon_przykladowy_aneksu() -> Wynik<Vec<u8>> {
             _ => akapit_t(s),
         })
         .collect();
-    dokument_przykladowy(tresc, "Aneks nr [numer aneksu] do umowy nr [numer umowy] · SZABLON PRZYKŁADOWY")
+    dokument_przykladowy(
+        tresc,
+        "Aneks nr [numer aneksu] do umowy nr [numer umowy] · SZABLON PRZYKŁADOWY",
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -671,7 +855,9 @@ fn sprawdz_rodzaj(r: &str) -> Wynik<()> {
     if RODZAJE_SZABLONOW.contains(&r) {
         Ok(())
     } else {
-        Err(BladApi::NieZnaleziono(format!("rodzaj szablonu „{r}” (umowa, aneks)")))
+        Err(BladApi::NieZnaleziono(format!(
+            "rodzaj szablonu „{r}” (umowa, aneks)"
+        )))
     }
 }
 
@@ -738,7 +924,8 @@ pub fn zapisz(folder: &Path, rodzaj: &str, nazwa: &str, bajty: &[u8]) -> Wynik<S
     }
     szablon_docx::analizuj(bajty, &wszystkie_klucze())?;
     let k = katalog(folder);
-    std::fs::create_dir_all(&k).map_err(|e| BladApi::Wewnetrzny(format!("folder szablonów: {e}")))?;
+    std::fs::create_dir_all(&k)
+        .map_err(|e| BladApi::Wewnetrzny(format!("folder szablonów: {e}")))?;
     let tmp = k.join(format!(".{rodzaj}.docx.tmp"));
     std::fs::write(&tmp, bajty).map_err(|e| BladApi::Wewnetrzny(format!("zapis szablonu: {e}")))?;
     std::fs::rename(&tmp, k.join(format!("{rodzaj}.docx")))
@@ -758,7 +945,10 @@ pub fn zapisz(folder: &Path, rodzaj: &str, nazwa: &str, bajty: &[u8]) -> Wynik<S
 pub fn usun(folder: &Path, rodzaj: &str) -> Wynik<StanSzablonu> {
     sprawdz_rodzaj(rodzaj)?;
     let k = katalog(folder);
-    for p in [k.join(format!("{rodzaj}.docx")), k.join(format!("{rodzaj}.json"))] {
+    for p in [
+        k.join(format!("{rodzaj}.docx")),
+        k.join(format!("{rodzaj}.json")),
+    ] {
         match std::fs::remove_file(&p) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -794,13 +984,24 @@ pub struct Dokument {
     pub przykladowy: bool,
 }
 
-pub async fn generuj(pula: &SqlitePool, folder: &Path, rodzaj: &str, d: DaneSzablonu, tylko: Option<String>) -> Wynik<Dokument> {
+pub async fn generuj(
+    pula: &SqlitePool,
+    folder: &Path,
+    rodzaj: &str,
+    d: DaneSzablonu,
+    tylko: Option<String>,
+) -> Wynik<Dokument> {
     let (szablon, przykladowy) = szablon(folder, rodzaj)?;
     let _ = pula;
-    let (bajty, raport) = tokio::task::spawn_blocking(move || szablon_docx::wypelnij(&szablon, &d, tylko.as_deref()))
-        .await
-        .map_err(|e| BladApi::Wewnetrzny(format!("generowanie dokumentu: {e}")))??;
-    Ok(Dokument { bajty, raport, przykladowy })
+    let (bajty, raport) =
+        tokio::task::spawn_blocking(move || szablon_docx::wypelnij(&szablon, &d, tylko.as_deref()))
+            .await
+            .map_err(|e| BladApi::Wewnetrzny(format!("generowanie dokumentu: {e}")))??;
+    Ok(Dokument {
+        bajty,
+        raport,
+        przykladowy,
+    })
 }
 
 pub fn podglad(d: &DaneSzablonu, dok: &Dokument, meta: Option<MetaSzablonu>) -> PodgladPol {
@@ -819,7 +1020,12 @@ pub fn podglad(d: &DaneSzablonu, dok: &Dokument, meta: Option<MetaSzablonu>) -> 
         })
         .collect();
     PodgladPol {
-        zrodlo: if dok.przykladowy { "przykladowy" } else { "wlasny" }.into(),
+        zrodlo: if dok.przykladowy {
+            "przykladowy"
+        } else {
+            "wlasny"
+        }
+        .into(),
         nazwa_szablonu: meta.map(|m| m.nazwa_pliku),
         pola,
         raport: dok.raport.clone(),
@@ -885,9 +1091,17 @@ async fn uruchom(mut k: tokio::process::Command) -> Result<(), String> {
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
     let dziecko = k.spawn().map_err(|e| e.to_string())?;
-    match tokio::time::timeout(std::time::Duration::from_secs(120), dziecko.wait_with_output()).await {
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        dziecko.wait_with_output(),
+    )
+    .await
+    {
         Ok(Ok(o)) if o.status.success() => Ok(()),
-        Ok(Ok(o)) => Err(String::from_utf8_lossy(&o.stderr).chars().take(200).collect()),
+        Ok(Ok(o)) => Err(String::from_utf8_lossy(&o.stderr)
+            .chars()
+            .take(200)
+            .collect()),
         Ok(Err(e)) => Err(e.to_string()),
         Err(_) => Err("przekroczony czas 120 s".into()),
     }
@@ -903,7 +1117,14 @@ async fn konwertuj(katalog: &Path, wej: &Path, wyj: &Path) -> Result<(), String>
             wyj.display().to_string().replace('\'', "''")
         );
         let mut k = tokio::process::Command::new("powershell");
-        k.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &skrypt]);
+        k.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &skrypt,
+        ]);
         match uruchom(k).await {
             Ok(()) if wyj.exists() => return Ok(()),
             Ok(()) => bledy.push("Word: brak pliku wynikowego".to_string()),
@@ -922,12 +1143,23 @@ async fn konwertuj(katalog: &Path, wej: &Path, wyj: &Path) -> Result<(), String>
     kandydaci.push("libreoffice".into());
     let profil = format!(
         "-env:UserInstallation=file:///{}",
-        katalog.join("profil").display().to_string().replace('\\', "/").trim_start_matches('/')
+        katalog
+            .join("profil")
+            .display()
+            .to_string()
+            .replace('\\', "/")
+            .trim_start_matches('/')
     );
     for s in kandydaci {
         let mut k = tokio::process::Command::new(&s);
         k.arg(&profil)
-            .args(["--headless", "--norestore", "--convert-to", "pdf", "--outdir"])
+            .args([
+                "--headless",
+                "--norestore",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+            ])
             .arg(katalog)
             .arg(wej);
         match uruchom(k).await {
@@ -958,9 +1190,14 @@ mod testy {
         let u = szablon_przykladowy_umowy().unwrap();
         let r = szablon_docx::analizuj(&u, &wszystkie_klucze()).unwrap();
         assert!(r.nieznane.is_empty(), "{:?}", r.nieznane);
-        for o in POLA.iter().filter(|o| o.dokument == "umowa" && o.rodzaj != "warunek") {
+        for o in POLA
+            .iter()
+            .filter(|o| o.dokument == "umowa" && o.rodzaj != "warunek")
+        {
             assert!(
-                r.pola.iter().any(|x| szablon_docx::normalizuj(x) == szablon_docx::normalizuj(o.nazwa)),
+                r.pola
+                    .iter()
+                    .any(|x| szablon_docx::normalizuj(x) == szablon_docx::normalizuj(o.nazwa)),
                 "brak pola {} w szablonie przykładowym",
                 o.nazwa
             );
@@ -974,6 +1211,9 @@ mod testy {
     #[test]
     fn kwoty_bez_waluty() {
         assert_eq!(kwota_bez_zl(4_835_200), "48\u{a0}352,00");
-        assert_eq!(nazwa_pliku("Umowa", "07/2026", "docx"), "Umowa_07-2026.docx");
+        assert_eq!(
+            nazwa_pliku("Umowa", "07/2026", "docx"),
+            "Umowa_07-2026.docx"
+        );
     }
 }

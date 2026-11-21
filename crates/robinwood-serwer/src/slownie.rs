@@ -6,7 +6,16 @@
 //! Grosze zapisujemy cyframi jako ułamek „xx/100”.
 
 const JEDNOSCI: [&str; 10] = [
-    "", "jeden", "dwa", "trzy", "cztery", "pięć", "sześć", "siedem", "osiem", "dziewięć",
+    "",
+    "jeden",
+    "dwa",
+    "trzy",
+    "cztery",
+    "pięć",
+    "sześć",
+    "siedem",
+    "osiem",
+    "dziewięć",
 ];
 const NASTKI: [&str; 10] = [
     "dziesięć",
@@ -171,7 +180,10 @@ mod testy {
         assert_eq!(zl(122), "sto dwadzieścia dwa złote 00/100");
         assert_eq!(zl(200), "dwieście złotych 00/100");
         assert_eq!(zl(345), "trzysta czterdzieści pięć złotych 00/100");
-        assert_eq!(zl(999), "dziewięćset dziewięćdziesiąt dziewięć złotych 00/100");
+        assert_eq!(
+            zl(999),
+            "dziewięćset dziewięćdziesiąt dziewięć złotych 00/100"
+        );
     }
 
     #[test]
@@ -188,10 +200,7 @@ mod testy {
         assert_eq!(zl(25_000), "dwadzieścia pięć tysięcy złotych 00/100");
         assert_eq!(zl(112_000), "sto dwanaście tysięcy złotych 00/100");
         assert_eq!(zl(122_000), "sto dwadzieścia dwa tysiące złotych 00/100");
-        assert_eq!(
-            zl(125_000),
-            "sto dwadzieścia pięć tysięcy złotych 00/100"
-        );
+        assert_eq!(zl(125_000), "sto dwadzieścia pięć tysięcy złotych 00/100");
         assert_eq!(
             zl(48_352),
             "czterdzieści osiem tysięcy trzysta pięćdziesiąt dwa złote 00/100"

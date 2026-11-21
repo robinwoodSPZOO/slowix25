@@ -28,7 +28,12 @@ pub struct DaneAneksu {
     pub nowy_termin_montazu: Option<String>,
 }
 
-const POLA_ANEKSU: &[&str] = &["data", "opis_zmian", "zmiana_ceny_gr", "nowy_termin_montazu"];
+const POLA_ANEKSU: &[&str] = &[
+    "data",
+    "opis_zmian",
+    "zmiana_ceny_gr",
+    "nowy_termin_montazu",
+];
 
 fn nazwa_pola(p: &str) -> String {
     match p {
@@ -200,21 +205,21 @@ pub async fn dodaj(pula: &SqlitePool, umowa_id: i64) -> Wynik<PelnyAneks> {
             }
         )));
     }
-    let otwarty: Option<i64> = sqlx::query_scalar(
-        "SELECT nr FROM aneksy WHERE umowa_id = ?1 AND status <> 'podpisany'",
-    )
-    .bind(umowa_id)
-    .fetch_optional(&mut *tx)
-    .await?;
+    let otwarty: Option<i64> =
+        sqlx::query_scalar("SELECT nr FROM aneksy WHERE umowa_id = ?1 AND status <> 'podpisany'")
+            .bind(umowa_id)
+            .fetch_optional(&mut *tx)
+            .await?;
     if let Some(nr) = otwarty {
         return Err(BladApi::NieprawidloweDane(format!(
             "aneks nr {nr} nie jest jeszcze podpisany – dokończ go albo usuń przed utworzeniem kolejnego"
         )));
     }
-    let nr: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(nr), 0) + 1 FROM aneksy WHERE umowa_id = ?1")
-        .bind(umowa_id)
-        .fetch_one(&mut *tx)
-        .await?;
+    let nr: i64 =
+        sqlx::query_scalar("SELECT COALESCE(MAX(nr), 0) + 1 FROM aneksy WHERE umowa_id = ?1")
+            .bind(umowa_id)
+            .fetch_one(&mut *tx)
+            .await?;
     let spec = specyfikacje::kopiuj_specyfikacje_w(&mut tx, u.specyfikacja_id).await?;
     let id = sqlx::query(
         "INSERT INTO aneksy (umowa_id, nr, data, opis_zmian, zmiana_ceny_gr, specyfikacja_id, status, \
@@ -253,7 +258,11 @@ pub async fn zmien(pula: &SqlitePool, id: i64, tresc: Value) -> Wynik<PelnyAneks
         nowy_termin_montazu: a.nowy_termin_montazu.clone(),
     };
     let json = serde_json::to_value(&baza).unwrap_or(Value::Null);
-    z.sprawdz(&json, serde_json::to_value(&a).unwrap_or(Value::Null), &nazwa_pola)?;
+    z.sprawdz(
+        &json,
+        serde_json::to_value(&a).unwrap_or(Value::Null),
+        &nazwa_pola,
+    )?;
     let mut d = z.zastosuj(&baza)?;
     umowy::sprawdz_date("data aneksu", &d.data)?;
     umowy::sprawdz_date("nowy termin montażu", &d.nowy_termin_montazu)?;
@@ -298,7 +307,11 @@ pub struct WynikStatusuAneksu {
     pub harmonogram: Option<WynikHarmonogramu>,
 }
 
-pub async fn zmien_status(pula: &SqlitePool, id: i64, z: ZmianaStatusuAneksu) -> Wynik<WynikStatusuAneksu> {
+pub async fn zmien_status(
+    pula: &SqlitePool,
+    id: i64,
+    z: ZmianaStatusuAneksu,
+) -> Wynik<WynikStatusuAneksu> {
     if !STATUSY_ANEKSU.contains(&z.status.as_str()) {
         return Err(BladApi::NieprawidloweDane(format!(
             "nieznany status aneksu „{}” (dozwolone: {})",
@@ -311,7 +324,10 @@ pub async fn zmien_status(pula: &SqlitePool, id: i64, z: ZmianaStatusuAneksu) ->
     let a = pobierz_w(&mut tx, id).await?;
     let ok = matches!(
         (a.status.as_str(), z.status.as_str()),
-        ("szkic", "wyslany") | ("szkic", "podpisany") | ("wyslany", "szkic") | ("wyslany", "podpisany")
+        ("szkic", "wyslany")
+            | ("szkic", "podpisany")
+            | ("wyslany", "szkic")
+            | ("wyslany", "podpisany")
     );
     if !ok {
         return Err(BladApi::NieprawidloweDane(format!(
@@ -322,7 +338,8 @@ pub async fn zmien_status(pula: &SqlitePool, id: i64, z: ZmianaStatusuAneksu) ->
     let p = pelny_w(&mut tx, id).await?;
     if a.status == "szkic" && p.lista_zmian.is_empty() {
         return Err(BladApi::NieprawidloweDane(
-            "aneks nie zawiera żadnych zmian – opisz zmiany, zmień kwotę, termin albo specyfikację".into(),
+            "aneks nie zawiera żadnych zmian – opisz zmiany, zmień kwotę, termin albo specyfikację"
+                .into(),
         ));
     }
     let mut harmonogram = None;
@@ -352,7 +369,11 @@ pub async fn zmien_status(pula: &SqlitePool, id: i64, z: ZmianaStatusuAneksu) ->
 
 /// Podpisany aneks: nowa wartość, termin i specyfikacja umowy; plan płatności, zlecenie,
 /// materiały i harmonogram – przeliczone.
-async fn zastosuj_w(db: &mut SqliteConnection, a: &Aneks, podpis: NaiveDate) -> Wynik<WynikHarmonogramu> {
+async fn zastosuj_w(
+    db: &mut SqliteConnection,
+    a: &Aneks,
+    podpis: NaiveDate,
+) -> Wynik<WynikHarmonogramu> {
     sqlx::query("UPDATE aneksy SET data_podpisania = ?1 WHERE id = ?2")
         .bind(podpis.format("%Y-%m-%d").to_string())
         .bind(a.id)

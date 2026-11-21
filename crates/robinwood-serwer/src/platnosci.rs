@@ -82,7 +82,10 @@ fn data(d: NaiveDate) -> String {
 
 /// „N dni roboczych/robocze” z poprawną odmianą.
 pub fn opis_dni_roboczych(n: u32) -> String {
-    let forma = crate::slownie::forma(u64::from(n), ["dzień roboczy", "dni robocze", "dni roboczych"]);
+    let forma = crate::slownie::forma(
+        u64::from(n),
+        ["dzień roboczy", "dni robocze", "dni roboczych"],
+    );
     format!("{n} {forma}")
 }
 
@@ -204,7 +207,8 @@ pub fn wylicz_plan(
                 Some(d) => (Some(d), false),
                 None => (
                     w.montaz_do.map(|m| {
-                        let kal = KalendarzDni::nowy(LiczenieDni::Robocze, kal_wolne.iter().copied());
+                        let kal =
+                            KalendarzDni::nowy(LiczenieDni::Robocze, kal_wolne.iter().copied());
                         kal.ostatni_dzien(m, w.czas_montazu_dni.unwrap_or(1).max(1))
                     }),
                     true,
@@ -217,7 +221,11 @@ pub fn wylicz_plan(
                 termin: od.map(|d| data(robocze.termin_od(d, u.b_dni_po_odbiorze))),
                 termin_opis: format!(
                     "w terminie {} od prawidłowego oddania przedmiotu umowy",
-                    opis_dni_roboczych(u.b_dni_po_odbiorze)
+                    if u.b_dni_po_odbiorze == 1 {
+                        "1 dnia roboczego".to_string()
+                    } else {
+                        format!("{} dni roboczych", u.b_dni_po_odbiorze)
+                    }
                 ),
                 szacunkowy: szac,
             });

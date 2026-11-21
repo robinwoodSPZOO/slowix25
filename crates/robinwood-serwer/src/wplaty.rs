@@ -26,7 +26,9 @@ pub struct DaneWplaty {
 pub async fn dodaj(pula: &SqlitePool, umowa_id: i64, d: DaneWplaty) -> Wynik<PelnaUmowa> {
     umowy::sprawdz_date("data wpłaty", &Some(d.data.clone()))?;
     if d.kwota_gr == 0 {
-        return Err(BladApi::NieprawidloweDane("kwota wpłaty nie może być zerowa".into()));
+        return Err(BladApi::NieprawidloweDane(
+            "kwota wpłaty nie może być zerowa".into(),
+        ));
     }
     // kwota ujemna = zwrot (np. po anulowaniu)
     limity::kwota("kwota wpłaty", Some(d.kwota_gr.abs()))?;
@@ -148,7 +150,11 @@ fn prawda() -> bool {
 
 /// Protokół odbioru: zapis (jeden na umowę – kolejny zastępuje datę i uwagi), status
 /// „odebrana”, termin pozostałości (wariant B) od daty odbioru, etap zlecenia „odbiór”.
-pub async fn zapisz_protokol(pula: &SqlitePool, umowa_id: i64, d: DaneProtokolu) -> Wynik<PelnaUmowa> {
+pub async fn zapisz_protokol(
+    pula: &SqlitePool,
+    umowa_id: i64,
+    d: DaneProtokolu,
+) -> Wynik<PelnaUmowa> {
     umowy::sprawdz_date("data odbioru", &Some(d.data.clone()))?;
     limity::tekst("uwagi", d.uwagi.as_deref(), MAKS_DLUGI)?;
     let mut tx = crate::baza::transakcja_zapisu(pula).await?;
@@ -159,7 +165,10 @@ pub async fn zapisz_protokol(pula: &SqlitePool, umowa_id: i64, d: DaneProtokolu)
             umowy::nazwa_statusu(&u.status)
         )));
     }
-    let uwagi = d.uwagi.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+    let uwagi = d
+        .uwagi
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty());
     match umowy::protokol_w(&mut tx, umowa_id).await? {
         Some(p) => {
             sqlx::query("UPDATE protokoly_odbioru SET data = ?1, uwagi = ?2, bez_zastrzezen = ?3 WHERE id = ?4")
