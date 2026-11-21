@@ -214,3 +214,97 @@ a.przycisk { text-decoration: none; }
   .kalendarz__okres { min-width: 0; }
   .legenda-kalendarza { gap: var(--o-4) var(--o-12); }
 }
+
+/* --- Oś czasu zlecenia --- */
+.os-czasu { display: flex; flex-direction: column; gap: var(--o-12); }
+.os-czasu h1 { margin: var(--o-4) 0 0; }
+.os-czasu .naglowek-modulu p { margin: var(--o-4) 0 0; }
+.link-wstecz { display: inline-flex; align-items: center; gap: var(--o-4); font-size: var(--rozmiar-etykieta); color: var(--akcent); text-decoration: none; }
+.link-wstecz:hover { text-decoration: underline; }
+.ostrzezenia-silnika { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--o-4); }
+.os-czasu__uklad { display: flex; gap: var(--o-12); align-items: flex-start; }
+.os-czasu__lewa { width: 300px; flex: none; display: flex; flex-direction: column; gap: var(--o-12); }
+.os-czasu__formularz, .os-czasu__roznica { padding: var(--o-12) var(--o-16); display: flex; flex-direction: column; gap: var(--o-12); overflow: visible; }
+.os-czasu__formularz h2, .os-czasu__roznica h2 { margin: 0; font-size: var(--rozmiar-h3); }
+.os-czasu__roznica h3 { margin: 0; font-size: var(--rozmiar-etykieta); display: flex; align-items: center; gap: var(--o-4); color: var(--tekst-drugorzedny); }
+.os-czasu__roznica p { margin: 0; font-size: var(--rozmiar-etykieta); }
+.os-czasu__pola { display: flex; flex-direction: column; gap: var(--o-8); }
+.os-czasu__przyciski { display: flex; gap: var(--o-8); flex-wrap: wrap; }
+.lista-zmian { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--o-4); font-size: var(--rozmiar-etykieta); }
+.lista-zmian li { display: flex; gap: var(--o-6); align-items: flex-start; }
+.lista-zmian svg { flex: none; margin-top: 2px; color: var(--kolor, var(--tekst-drugorzedny)); }
+
+.os { flex: 1; min-width: 0; padding: var(--o-8) var(--o-12) var(--o-12); }
+.os__pusto { margin: var(--o-16); color: var(--tekst-drugorzedny); max-width: 60ch; }
+.os__siatka { --szer-etykiety: 210px; position: relative; }
+.os__tresc { position: relative; }
+.os__wiersz { display: grid; grid-template-columns: var(--szer-etykiety) 1fr; min-height: 38px; border-bottom: 1px solid var(--linia); }
+.os__wiersz--podzialka { min-height: 34px; border-bottom: 1px solid var(--linia-mocna); font-size: var(--rozmiar-mikro); color: var(--tekst-drugorzedny); }
+.os__etykieta { display: flex; align-items: center; gap: var(--o-8); padding-right: var(--o-8); min-width: 0; font-size: var(--rozmiar-tabela); }
+.os__ikona { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: var(--r-4); background: var(--kolor); color: #fff; flex: none; }
+.os__nazwa { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.os__nazwa small { font-size: var(--rozmiar-mikro); color: var(--tekst-drugorzedny); display: inline-flex; align-items: center; gap: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.os__tor { position: relative; min-width: 0; }
+.os__podzialka { position: absolute; top: 17px; height: 17px; transform: translateX(-2px); white-space: nowrap; border-left: 1px solid var(--linia-mocna); padding-left: 3px; }
+.os__podzialka--miesiac { top: 0; height: 34px; font-weight: var(--waga-pogrubiona); color: var(--tekst); text-transform: capitalize; border-left-color: var(--tekst-drugorzedny); }
+.os__dzis { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--akcent); z-index: 3; pointer-events: none; }
+.os__dzis span { position: absolute; top: -18px; left: -14px; font-size: var(--rozmiar-mikro); font-weight: var(--waga-pogrubiona); color: var(--tekst-na-akcencie); background: var(--akcent); padding: 0 4px; border-radius: 3px; }
+.os__element {
+  position: absolute; top: 8px; height: 22px; min-width: 10px; display: inline-flex; align-items: center; gap: 3px;
+  padding: 0 4px; border: 0; border-left: 3px solid var(--kolor); border-radius: var(--r-4);
+  background: color-mix(in srgb, var(--kolor) 22%, white); font: inherit; font-size: var(--rozmiar-mikro); color: var(--tekst);
+  cursor: pointer; overflow: visible; white-space: nowrap; z-index: 2;
+}
+.os__element--okno { background: linear-gradient(90deg, color-mix(in srgb, var(--kolor) 14%, white) 0 var(--planowa, 50%), color-mix(in srgb, var(--kolor) 40%, white) var(--planowa, 50%) 100%); }
+.os__element--punkt { width: 22px; justify-content: center; border-left: 0; border-radius: 50%; background: var(--kolor); color: #fff; transform: translateX(-11px); padding: 0; }
+.os__element--punkt .ikona-stanu { color: #fff; }
+.os__element:focus-visible { outline: none; box-shadow: var(--fokus); }
+.os__element--zolty { box-shadow: inset 0 0 0 1px var(--stan-zolty); }
+.os__element--pomaranczowy { box-shadow: inset 0 0 0 2px var(--stan-pomaranczowy); }
+.os__element--czerwony { box-shadow: inset 0 0 0 2px var(--stan-czerwony); }
+.os__element--punkt.os__element--czerwony { box-shadow: 0 0 0 2px var(--stan-czerwony-tlo), 0 0 0 4px var(--stan-czerwony); }
+.os__element--punkt.os__element--pomaranczowy { box-shadow: 0 0 0 2px var(--stan-pomaranczowy-tlo), 0 0 0 4px var(--stan-pomaranczowy); }
+.os__element--wykonane { opacity: 0.65; }
+.os__element--wybrany { outline: 2px solid var(--tekst); outline-offset: 1px; }
+.os__element-tekst { overflow: hidden; text-overflow: ellipsis; }
+.os__planowa { position: absolute; top: -7px; transform: translateX(-50%); color: var(--kolor); filter: brightness(0.7); }
+.os__planowa svg { fill: currentColor; }
+.os__znacznik { position: absolute; top: 31px; transform: translateX(-50%); color: var(--stan-spokojnie); display: inline-flex; z-index: 2; }
+.os__znacznik--dostawa { color: var(--tekst-drugorzedny); }
+.os__znacznik--zagrozona { color: var(--stan-czerwony); }
+.os__flaga { position: absolute; top: 10px; display: inline-flex; align-items: center; gap: 2px; font-size: var(--rozmiar-mikro); font-weight: var(--waga-pogrubiona); color: var(--tekst); white-space: nowrap; border-left: 2px solid var(--kolor); padding-left: 3px; }
+.os__wiersz:has(.os__znacznik) { min-height: 48px; }
+@media (max-width: 1500px) {
+  .os-czasu__lewa { width: 260px; }
+  .os__siatka { --szer-etykiety: 170px; }
+}
+
+/* --- Ustawienia kalendarza --- */
+.ustawienia-kalendarza { display: flex; flex-direction: column; gap: var(--o-16); max-width: 1280px; }
+.ustawienia-kalendarza h1 { margin: var(--o-4) 0 0; }
+.ustawienia-kalendarza .naglowek-modulu p { margin: var(--o-4) 0 0; }
+.spis-sekcji { display: flex; flex-wrap: wrap; gap: var(--o-4) var(--o-16); font-size: var(--rozmiar-etykieta); position: sticky; top: -20px; z-index: 4; background: var(--tlo-aplikacji); padding: var(--o-6) 0; }
+.spis-sekcji a { color: var(--akcent); font-weight: var(--waga-srednia); }
+.sekcja-ustawien { padding: var(--o-16) var(--o-20); display: flex; flex-direction: column; gap: var(--o-12); overflow: visible; scroll-margin-top: 40px; }
+.sekcja-ustawien h2 { margin: 0; font-size: var(--rozmiar-h2); }
+.sekcja-ustawien h3 { margin: var(--o-8) 0 0; font-size: var(--rozmiar-h3); }
+.sekcja-ustawien > .pole__pomoc { font-size: var(--rozmiar-etykieta); max-width: 100ch; margin: 0; }
+.sekcja-ustawien .tabela th[scope="row"] { font-weight: var(--waga-srednia); }
+.tabela-przewijana { overflow-x: auto; }
+.tabela-przewijana--niska { max-height: 260px; overflow-y: auto; }
+.wejscie--dni { width: 64px; text-align: right; }
+.akcje-wiersza { display: flex; align-items: center; gap: var(--o-4); flex-wrap: wrap; }
+.wiersz-dodawania td { background: var(--tlo-powierzchni-2); }
+.siatka-pol { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--o-12) var(--o-16); }
+.tryb-dni { display: flex; flex-direction: column; gap: var(--o-6); align-items: flex-start; }
+.tryb-dni .pole__pomoc { font-size: var(--rozmiar-etykieta); max-width: 100ch; }
+.przyciski-sekcji { display: flex; gap: var(--o-8); }
+.formularz-dni { display: grid; grid-template-columns: 170px 170px 220px minmax(160px, 1fr) auto; gap: var(--o-12); align-items: end; }
+.lista-swiat { columns: 3; font-size: var(--rozmiar-etykieta); margin: 0; padding-left: var(--o-16); }
+.wybor-pliku { align-self: flex-start; position: relative; }
+.wybor-pliku input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.wybor-pliku:focus-within { box-shadow: var(--fokus); }
+.podglad-importu { display: flex; flex-direction: column; gap: var(--o-8); align-items: flex-start; }
+.podglad-importu p { margin: 0; }
+.raport-przeliczenia ul { margin: var(--o-4) 0 0; font-size: var(--rozmiar-etykieta); }
+@media (max-width: 1400px) { .formularz-dni { grid-template-columns: 1fr 1fr 1fr; } }
