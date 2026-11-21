@@ -688,6 +688,79 @@ fn tylko_blok(x: &str, nazwa: &str) -> Wynik<String> {
     ))
 }
 
+/// Wcięcie lewe (twipy) pierwszego akapitu fragmentu – `w:ind w:left` / `w:start`.
+fn wciecie(f: &str) -> Option<u32> {
+    let i = f.find("<w:ind ")?;
+    let tag = &f[i..i + f[i..].find('>')?];
+    for atr in ["w:left=\"", "w:start=\""] {
+        if let Some(a) = tag.find(atr) {
+            let od = a + atr.len();
+            let do_ = tag[od..].find('"')? + od;
+            return tag[od..do_]
+                .parse::<i64>()
+                .ok()
+                .filter(|v| *v > 0 && *v < 6000)
+                .map(|v| v as u32);
+        }
+    }
+    None
+}
+
+/// Wstawiony blok dostaje wcięcie akapitu, który zastępuje (np. lista w paragrafie umowy):
+/// tabele – `w:tblInd` i proporcjonalnie węższe kolumny, akapity – `w:ind`.
+fn z_wcieciem(blok: &str, n: u32) -> String {
+    const SZEROKOSC: u32 = 9600;
+    let skala = |v: u32| {
+        (u64::from(v) * u64::from(SZEROKOSC.saturating_sub(n).max(4000)) / u64::from(SZEROKOSC))
+            as u32
+    };
+    let mut wynik = String::with_capacity(blok.len() + 256);
+    let mut reszta = blok;
+    // szerokości w tabelach
+    while let Some(i) = ["<w:gridCol w:w=\"", "<w:tcW w:w=\"", "<w:tblW w:w=\""]
+        .iter()
+        .filter_map(|t| reszta.find(t).map(|p| (p, t.len())))
+        .min()
+        .map(|(p, l)| p + l)
+    {
+        wynik.push_str(&reszta[..i]);
+        let k = reszta[i..].find('"').unwrap_or(0);
+        let v: u32 = reszta[i..i + k].parse().unwrap_or(0);
+        wynik.push_str(&skala(v).to_string());
+        reszta = &reszta[i + k..];
+    }
+    wynik.push_str(reszta);
+    let wynik = wynik.replace(
+        "<w:tblBorders>",
+        &format!("<w:tblInd w:w=\"{n}\" w:type=\"dxa\"/><w:tblBorders>"),
+    );
+    // akapity spoza tabel: w:ind przed w:jc (kolejność elementów w:pPr)
+    let mut out = String::with_capacity(wynik.len() + 128);
+    let mut glebokosc = 0i32;
+    let mut i = 0;
+    while i < wynik.len() {
+        let r = &wynik[i..];
+        if r.starts_with("<w:tbl>") {
+            glebokosc += 1;
+        } else if r.starts_with("</w:tbl>") {
+            glebokosc -= 1;
+        } else if glebokosc == 0 && r.starts_with("<w:pPr>") {
+            let k = r.find("</w:pPr>").unwrap_or(0);
+            let ppr = &r[..k];
+            out.push_str(&match ppr.find("<w:jc ") {
+                Some(j) => format!("{}<w:ind w:left=\"{n}\"/>{}", &ppr[..j], &ppr[j..]),
+                None => format!("{ppr}<w:ind w:left=\"{n}\"/>"),
+            });
+            i += k;
+            continue;
+        }
+        let c = r.chars().next().unwrap_or(' ');
+        out.push(c);
+        i += c.len_utf8();
+    }
+    out
+}
+
 /// Krok 3: pola blokowe – akapit z samym polem zastępujemy przygotowanym XML-em.
 fn wstaw_bloki(mut x: String, dane: &DaneSzablonu, r: &mut RaportSzablonu, glowna: bool) -> String {
     let mut od = 0;
@@ -719,7 +792,10 @@ fn wstaw_bloki(mut x: String, dane: &DaneSzablonu, r: &mut RaportSzablonu, glown
                     let otw = przed.matches("<w:tc>").count() + przed.matches("<w:tc ").count();
                     otw > przed.matches("</w:tc>").count()
                 };
-                let mut wstaw = blok.clone();
+                let mut wstaw = match wciecie(&x[ps..pe]) {
+                    Some(n) if !w_komorce => z_wcieciem(blok, n),
+                    _ => blok.clone(),
+                };
                 if w_komorce && !wstaw.ends_with("</w:p>") {
                     wstaw.push_str("<w:p/>");
                 }
@@ -860,7 +936,10 @@ fn kontrolki_tresci(x: &str, dane: &DaneSzablonu, r: &mut RaportSzablonu, glowna
                 poz = koniec;
                 continue;
             }
-            blok.clone()
+            match wciecie(tresc) {
+                Some(n) => z_wcieciem(blok, n),
+                None => blok.clone(),
+            }
         } else {
             let w = &dane.pola[&klucz];
             let w = if w.trim().is_empty() {
@@ -1273,6 +1352,39 @@ mod testy {
             "nieznana kontrolka zostaje"
         );
         assert!(zrownowazony(&doc));
+    }
+
+    #[test]
+    fn wciecie_bloku() {
+        let blok = format!(
+            "{}{}",
+            xml::akapit(
+                &xml::przebieg("Tytuł", true, None),
+                Some("left"),
+                Some(0),
+                false
+            ),
+            xml::tabela(
+                &[4800, 4800],
+                &[(
+                    true,
+                    vec![xml::Komorka::naglowek("a"), xml::Komorka::naglowek("b")]
+                )]
+            )
+        );
+        let w = z_wcieciem(&blok, 960);
+        assert!(w.contains("<w:tblInd w:w=\"960\" w:type=\"dxa\"/><w:tblBorders>"));
+        assert!(w.contains("<w:gridCol w:w=\"4320\"/>"), "{w}");
+        assert!(w.contains("<w:tblW w:w=\"8640\""));
+        assert!(
+            w.contains("<w:ind w:left=\"960\"/><w:jc w:val=\"left\"/>"),
+            "{w}"
+        );
+        assert_eq!(
+            wciecie("<w:pPr><w:ind w:left=\"851\" w:hanging=\"1\"/></w:pPr>"),
+            Some(851)
+        );
+        assert_eq!(wciecie("<w:pPr/>"), None);
     }
 
     #[test]
