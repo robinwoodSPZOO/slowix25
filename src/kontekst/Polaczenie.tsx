@@ -11,6 +11,8 @@ interface WartoscKontekstu {
   /** Ostatnie zdarzenie o zmianie danych (do odświeżania list). */
   ostatnieZdarzenie: Zdarzenie | null;
   odswiez: () => void;
+  /** Stan gniazda zdarzeń (WebSocket): true – połączono, false – zerwane, null – jeszcze nie wiadomo. */
+  naZywo: boolean | null;
 }
 
 const Kontekst = createContext<WartoscKontekstu>({
@@ -18,11 +20,13 @@ const Kontekst = createContext<WartoscKontekstu>({
   api: null,
   ostatnieZdarzenie: null,
   odswiez: () => {},
+  naZywo: null,
 });
 
 export function DostawcaPolaczenia({ children }: { children: ReactNode }) {
   const [polaczenie, ustawPolaczenie] = useState<Polaczenie | null>(null);
   const [ostatnieZdarzenie, ustawZdarzenie] = useState<Zdarzenie | null>(null);
+  const [naZywo, ustawNaZywo] = useState<boolean | null>(null);
 
   const odswiez = useCallback(() => {
     pobierzPolaczenie().then(ustawPolaczenie, (e: unknown) => console.error(e));
@@ -37,11 +41,11 @@ export function DostawcaPolaczenia({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!api) return;
-    return api.subskrybujZdarzenia(ustawZdarzenie);
+    return api.subskrybujZdarzenia(ustawZdarzenie, ustawNaZywo);
   }, [api]);
 
   return (
-    <Kontekst.Provider value={{ polaczenie, api, ostatnieZdarzenie, odswiez }}>
+    <Kontekst.Provider value={{ polaczenie, api, ostatnieZdarzenie, odswiez, naZywo }}>
       {children}
     </Kontekst.Provider>
   );
