@@ -12,6 +12,7 @@ pub mod eksport;
 pub mod firma;
 pub mod formaty;
 pub mod klienci;
+pub mod limity;
 pub mod mdns;
 pub mod oferty;
 pub mod pliki;
@@ -19,8 +20,10 @@ pub mod roznice;
 pub mod slowniki;
 pub mod specyfikacje;
 pub mod szablony;
+pub mod wejscie;
 pub mod wycena;
 pub mod zdarzenia;
+pub mod zmiany;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

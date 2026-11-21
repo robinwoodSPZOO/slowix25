@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{FromRow, SqliteConnection, SqlitePool};
 
-use crate::bledy::{BladApi, Wynik};
+use crate::bledy::{BladApi, BladPozycji, Wynik};
 use crate::specyfikacje::{self, dziedziczy_material_korpusu, WierszSzablonu, WynikZmiany};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -97,7 +97,7 @@ pub struct WstawSekcje {
 
 /// Nowa część w sekcji z wierszami szablonu.
 pub async fn wstaw_czesc(pula: &SqlitePool, sekcja_id: i64, d: WstawCzesc) -> Wynik<WynikZmiany> {
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let spec_id = specyfikacje::spec_sekcji_pub(&mut tx, sekcja_id).await?;
     specyfikacje::sprawdz_zapis(&mut tx, spec_id).await?;
     let sz = pobierz_w(&mut tx, d.szablon_id).await?;
@@ -123,7 +123,7 @@ pub async fn wstaw_czesc(pula: &SqlitePool, sekcja_id: i64, d: WstawCzesc) -> Wy
 
 /// Nowa sekcja (pomieszczenie) z częściami z szablonu.
 pub async fn wstaw_sekcje(pula: &SqlitePool, spec_id: i64, d: WstawSekcje) -> Wynik<WynikZmiany> {
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     specyfikacje::sprawdz_zapis(&mut tx, spec_id).await?;
     let sz = pobierz_w(&mut tx, d.szablon_id).await?;
     let nazwa = d
@@ -335,96 +335,149 @@ fn pozycje_z_pliku(j: &Value) -> Wynik<Vec<(String, NowaPozycja)>> {
     Ok(wynik)
 }
 
-async fn kategoria_id(
-    db: &mut SqliteConnection,
-    nazwa: &str,
-    raport: &mut RaportImportu,
-) -> Wynik<i64> {
-    let id: Option<i64> =
-        sqlx::query_scalar("SELECT id FROM kategorie_materialow WHERE lower(nazwa) = lower(?1)")
-            .bind(nazwa)
-            .fetch_optional(&mut *db)
-            .await?;
-    if let Some(id) = id {
-        return Ok(id);
-    }
-    raport.nowe_kategorie.push(nazwa.to_string());
-    Ok(
-        sqlx::query("INSERT INTO kategorie_materialow (nazwa) VALUES (?1)")
-            .bind(nazwa)
-            .execute(&mut *db)
-            .await?
-            .last_insert_rowid(),
+/// Największa liczba pozycji w jednym pliku słowników.
+pub const MAKS_POZYCJI_IMPORTU: usize = 20_000;
+/// Największa liczba szablonów w jednym pliku.
+pub const MAKS_SZABLONOW_IMPORTU: usize = 500;
+/// Limit rozmiaru treści żądań importu (bajty).
+pub const MAKS_PLIK_IMPORTU: usize = 8 * 1024 * 1024;
+
+fn klucz_pozycji(wartosc: &str, producent: Option<&str>, dekor: Option<&str>) -> String {
+    format!(
+        "{}\u{1f}{}\u{1f}{}",
+        wartosc.to_lowercase(),
+        producent.unwrap_or_default(),
+        dekor.unwrap_or_default()
     )
 }
 
 /// Import słowników z pliku użytkownika (JSON jako wartość).
+///
+/// Istniejące klucze (wartość bez wielkości liter + producent + dekor) i kategorie są
+/// wczytywane raz do pamięci, a nowe pozycje wstawiane partiami – import tysięcy pozycji
+/// trwa ułamek sekundy i nie blokuje zapisu z innych stanowisk.
 pub async fn importuj_slowniki(pula: &SqlitePool, j: &Value) -> Wynik<RaportImportu> {
+    use std::collections::{HashMap, HashSet};
     let pozycje = pozycje_z_pliku(j)?;
+    if pozycje.len() > MAKS_POZYCJI_IMPORTU {
+        return Err(BladApi::NieprawidloweDane(format!(
+            "plik zawiera {} pozycji – w jednym imporcie najwyżej {MAKS_POZYCJI_IMPORTU}; podziel plik",
+            pozycje.len()
+        )));
+    }
     let mut raport = RaportImportu::default();
-    let mut tx = pula.begin().await?;
-    let znane: Vec<String> = sqlx::query_scalar("SELECT kod FROM slowniki")
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
+    let znane: HashSet<String> = sqlx::query_scalar("SELECT kod FROM slowniki")
         .fetch_all(&mut *tx)
-        .await?;
-    let mut kolejnosc: BTreeMap<String, i64> = BTreeMap::new();
+        .await?
+        .into_iter()
+        .collect();
+    let istniejace: Vec<(String, String, Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT slownik_kod, wartosc, producent, dekor FROM pozycje_slownika")
+            .fetch_all(&mut *tx)
+            .await?;
+    let mut klucze: HashSet<(String, String)> = istniejace
+        .iter()
+        .map(|(k, w, p, d)| (k.clone(), klucz_pozycji(w, p.as_deref(), d.as_deref())))
+        .collect();
+    let mut kategorie: HashMap<String, i64> =
+        sqlx::query_as::<_, (i64, String)>("SELECT id, nazwa FROM kategorie_materialow")
+            .fetch_all(&mut *tx)
+            .await?
+            .into_iter()
+            .map(|(id, n)| (n.to_lowercase(), id))
+            .collect();
+    let mut kolejnosc: HashMap<String, i64> = sqlx::query_as::<_, (String, i64)>(
+        "SELECT slownik_kod, COALESCE(MAX(kolejnosc), 0) FROM pozycje_slownika GROUP BY slownik_kod",
+    )
+    .fetch_all(&mut *tx)
+    .await?
+    .into_iter()
+    .collect();
+
+    struct DoWstawienia {
+        kod: String,
+        p: NowaPozycja,
+        kategoria: Option<i64>,
+        kolejnosc: i64,
+        podgrupa: Option<String>,
+    }
+    let mut nowe: Vec<DoWstawienia> = Vec::new();
+    let mut nieznane: Vec<String> = Vec::new();
     for (kod, p) in pozycje {
         if !znane.contains(&kod) {
             raport.pominiete += 1;
-            if !raport.ostrzezenia.iter().any(|o| o.contains(&kod)) {
-                raport
-                    .ostrzezenia
-                    .push(format!("nieznany słownik „{kod}” – pominięto"));
+            if !nieznane.contains(&kod) {
+                nieznane.push(kod.clone());
             }
             continue;
         }
-        let podgrupa = p
-            .podgrupa
-            .filter(|g| specyfikacje::PODGRUPY.contains(&g.as_str()));
-        let istnieje: Option<i64> = sqlx::query_scalar(
-            "SELECT id FROM pozycje_slownika WHERE slownik_kod = ?1 AND lower(wartosc) = lower(?2) \
-             AND COALESCE(producent, '') = COALESCE(?3, '') AND COALESCE(dekor, '') = COALESCE(?4, '')",
-        )
-        .bind(&kod)
-        .bind(&p.wartosc)
-        .bind(&p.producent)
-        .bind(&p.dekor)
-        .fetch_optional(&mut *tx)
-        .await?;
-        if istnieje.is_some() {
+        if !klucze.insert((
+            kod.clone(),
+            klucz_pozycji(&p.wartosc, p.producent.as_deref(), p.dekor.as_deref()),
+        )) {
             raport.pominiete += 1;
             continue;
         }
         let kat = match &p.kategoria {
-            Some(k) => Some(kategoria_id(&mut tx, k, &mut raport).await?),
+            Some(k) => Some(match kategorie.get(&k.to_lowercase()) {
+                Some(id) => *id,
+                None => {
+                    let id = sqlx::query("INSERT INTO kategorie_materialow (nazwa) VALUES (?1)")
+                        .bind(k)
+                        .execute(&mut *tx)
+                        .await?
+                        .last_insert_rowid();
+                    raport.nowe_kategorie.push(k.clone());
+                    kategorie.insert(k.to_lowercase(), id);
+                    id
+                }
+            }),
             None => None,
         };
-        let k = match kolejnosc.get(&kod) {
-            Some(k) => *k,
-            None => {
-                let max: Option<i64> = sqlx::query_scalar(
-                    "SELECT MAX(kolejnosc) FROM pozycje_slownika WHERE slownik_kod = ?1",
-                )
-                .bind(&kod)
-                .fetch_one(&mut *tx)
-                .await?;
-                max.unwrap_or(0)
+        let k = kolejnosc.entry(kod.clone()).or_insert(0);
+        *k += 1;
+        let podgrupa = p
+            .podgrupa
+            .clone()
+            .filter(|g| specyfikacje::PODGRUPY.contains(&g.as_str()));
+        *raport.dodane.entry(kod.clone()).or_default() += 1;
+        nowe.push(DoWstawienia {
+            kolejnosc: *k,
+            kod,
+            p,
+            kategoria: kat,
+            podgrupa,
+        });
+    }
+    for kod in nieznane {
+        raport
+            .ostrzezenia
+            .push(format!("nieznany słownik „{kod}” – pominięto"));
+    }
+    // Partiami po 100 wierszy (8 parametrów na wiersz, limit SQLite 32 766).
+    for partia in nowe.chunks(100) {
+        let mut sql = String::from(
+            "INSERT INTO pozycje_slownika (slownik_kod, wartosc, producent, dekor, kategoria_materialu_id, kolejnosc, podgrupa, zrodlo) VALUES ",
+        );
+        for i in 0..partia.len() {
+            if i > 0 {
+                sql.push(',');
             }
-        } + 1;
-        kolejnosc.insert(kod.clone(), k);
-        sqlx::query(
-            "INSERT INTO pozycje_slownika (slownik_kod, wartosc, producent, dekor, kategoria_materialu_id, kolejnosc, podgrupa, zrodlo) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'import')",
-        )
-        .bind(&kod)
-        .bind(&p.wartosc)
-        .bind(&p.producent)
-        .bind(&p.dekor)
-        .bind(kat)
-        .bind(k)
-        .bind(podgrupa)
-        .execute(&mut *tx)
-        .await?;
-        *raport.dodane.entry(kod).or_default() += 1;
+            sql.push_str("(?, ?, ?, ?, ?, ?, ?, 'import')");
+        }
+        let mut q = sqlx::query(&sql);
+        for n in partia {
+            q = q
+                .bind(&n.kod)
+                .bind(&n.p.wartosc)
+                .bind(&n.p.producent)
+                .bind(&n.p.dekor)
+                .bind(n.kategoria)
+                .bind(n.kolejnosc)
+                .bind(&n.podgrupa);
+        }
+        q.execute(&mut *tx).await?;
     }
     tx.commit().await?;
     Ok(raport)
@@ -477,8 +530,11 @@ fn szablon_z_pliku(v: &Value) -> Option<(String, String, String, DaneSzablonu)> 
                 .filter_map(|c| c.as_str().map(oczysc_wartosc))
                 .filter(|c| !c.is_empty())
                 .collect(),
-            wiersze: serde_json::from_value(v.get("wiersze").cloned().unwrap_or(Value::Null))
-                .unwrap_or_default(),
+            // Poprawność wierszy sprawdza wcześniej `sprawdz_szablon` – tu już się nie gubią.
+            wiersze: tablica(v, &["wiersze"])
+                .iter()
+                .filter_map(|w| serde_json::from_value(w.clone()).ok())
+                .collect(),
         };
         return Some((kod, nazwa, tytul, dane));
     }
@@ -538,7 +594,200 @@ fn szablon_z_pliku(v: &Value) -> Option<(String, String, String, DaneSzablonu)> 
     ))
 }
 
+const POLA_WIERSZA_SZABLONU: &[&str] = &[
+    "podgrupa",
+    "rodzaj",
+    "material",
+    "opis",
+    "kategoria",
+    "udzial",
+];
+
+/// Sprawdza jeden szablon z pliku; dopisuje błędy (pozycja, pole, powód) do `bledy`.
+fn sprawdz_szablon(i: usize, v: &Value, bledy: &mut Vec<BladPozycji>) {
+    let nazwa_szablonu = tekst(v, "nazwa")
+        .or_else(|| tekst(v, "typ_zabudowy"))
+        .unwrap_or_default();
+    let poz = |dodatek: &str| {
+        let n = if nazwa_szablonu.is_empty() {
+            String::new()
+        } else {
+            format!(" („{nazwa_szablonu}”)")
+        };
+        format!("szablon {}{n}{dodatek}", i + 1)
+    };
+    let mut blad = |pozycja: String, pole: &str, powod: String| {
+        bledy.push(BladPozycji {
+            pozycja,
+            pole: pole.into(),
+            powod,
+        })
+    };
+    let Some(obj) = v.as_object() else {
+        blad(poz(""), "", "oczekiwano obiektu szablonu".into());
+        return;
+    };
+    let tekst_lub_null =
+        |w: Option<&Value>| matches!(w, None | Some(Value::Null) | Some(Value::String(_)));
+    if obj.contains_key("nazwa") || !obj.contains_key("typ_zabudowy") {
+        // format wewnętrzny
+        match obj.get("nazwa") {
+            Some(Value::String(n)) if !n.trim().is_empty() => {
+                if n.chars().count() > crate::limity::MAKS_NAZWA {
+                    blad(poz(""), "nazwa", "najwyżej 200 znaków".into());
+                }
+            }
+            Some(Value::String(_)) => blad(poz(""), "nazwa", "nazwa nie może być pusta".into()),
+            Some(_) => blad(poz(""), "nazwa", "oczekiwano tekstu".into()),
+            None => blad(
+                poz(""),
+                "nazwa",
+                "brak nazwy szablonu (pole „nazwa” albo „typ_zabudowy”)".into(),
+            ),
+        }
+        for pole in ["kod", "tytul_sekcji"] {
+            if !tekst_lub_null(obj.get(pole)) {
+                blad(poz(""), pole, "oczekiwano tekstu".into());
+            }
+        }
+        match obj.get("czesci") {
+            None | Some(Value::Null) => {}
+            Some(Value::Array(c)) => {
+                for (k, x) in c.iter().enumerate() {
+                    if !x.is_string() {
+                        blad(
+                            poz(&format!(", część {}", k + 1)),
+                            "czesci",
+                            "oczekiwano tekstu (nazwy części)".into(),
+                        );
+                    }
+                }
+            }
+            Some(_) => blad(poz(""), "czesci", "oczekiwano listy nazw części".into()),
+        }
+        match obj.get("wiersze") {
+            None | Some(Value::Null) => {}
+            Some(Value::Array(w)) => {
+                for (k, x) in w.iter().enumerate() {
+                    let pw = poz(&format!(", wiersz {}", k + 1));
+                    let Some(o) = x.as_object() else {
+                        blad(pw, "", "oczekiwano obiektu wiersza".into());
+                        continue;
+                    };
+                    for klucz in o.keys() {
+                        if !POLA_WIERSZA_SZABLONU.contains(&klucz.as_str()) {
+                            blad(
+                                pw.clone(),
+                                klucz,
+                                format!(
+                                    "nieznane pole (dozwolone: {})",
+                                    POLA_WIERSZA_SZABLONU.join(", ")
+                                ),
+                            );
+                        }
+                    }
+                    for pole in ["rodzaj", "material", "opis", "kategoria"] {
+                        match o.get(pole) {
+                            None | Some(Value::Null) => {}
+                            Some(Value::String(t))
+                                if t.chars().count() > crate::limity::MAKS_TEKST =>
+                            {
+                                blad(
+                                    pw.clone(),
+                                    pole,
+                                    "za długi tekst (najwyżej 1000 znaków)".into(),
+                                )
+                            }
+                            Some(Value::String(_)) => {}
+                            Some(_) => blad(pw.clone(), pole, "oczekiwano tekstu".into()),
+                        }
+                    }
+                    match o.get("podgrupa") {
+                        None | Some(Value::Null) => {}
+                        Some(Value::String(g)) if specyfikacje::PODGRUPY.contains(&g.as_str()) => {}
+                        Some(Value::String(g)) => blad(
+                            pw.clone(),
+                            "podgrupa",
+                            format!(
+                                "nieznana podgrupa „{g}” (dozwolone: {})",
+                                specyfikacje::PODGRUPY.join(", ")
+                            ),
+                        ),
+                        Some(_) => blad(pw.clone(), "podgrupa", "oczekiwano tekstu".into()),
+                    }
+                    if !matches!(
+                        o.get("udzial"),
+                        None | Some(Value::Null) | Some(Value::Number(_))
+                    ) {
+                        blad(pw.clone(), "udzial", "oczekiwano liczby od 0 do 1".into());
+                    }
+                }
+            }
+            Some(_) => blad(poz(""), "wiersze", "oczekiwano listy wierszy".into()),
+        }
+    } else {
+        // format analityczny
+        if !matches!(obj.get("typ_zabudowy"), Some(Value::String(t)) if !t.trim().is_empty()) {
+            blad(
+                poz(""),
+                "typ_zabudowy",
+                "oczekiwano niepustego tekstu".into(),
+            );
+        }
+        for (klucz, nazwa_listy) in [
+            ("wiersze_materialowe", "wiersz"),
+            ("wyposazenie", "wyposażenie"),
+        ] {
+            match obj.get(klucz) {
+                None | Some(Value::Null) => {}
+                Some(Value::Array(w)) => {
+                    for (k, x) in w.iter().enumerate() {
+                        let pw = poz(&format!(", {nazwa_listy} {}", k + 1));
+                        let Some(o) = x.as_object() else {
+                            blad(pw, klucz, "oczekiwano obiektu".into());
+                            continue;
+                        };
+                        for pole in [
+                            "rodzaj",
+                            "najczestszy_material",
+                            "typowy_opis",
+                            "najczestsza_kategoria",
+                        ] {
+                            if !tekst_lub_null(o.get(pole)) {
+                                blad(pw.clone(), pole, "oczekiwano tekstu".into());
+                            }
+                        }
+                        if !matches!(
+                            o.get("udzial_sekcji"),
+                            None | Some(Value::Null) | Some(Value::Number(_))
+                        ) {
+                            blad(
+                                pw.clone(),
+                                "udzial_sekcji",
+                                "oczekiwano liczby od 0 do 1".into(),
+                            );
+                        }
+                    }
+                }
+                Some(_) => blad(poz(""), klucz, "oczekiwano listy".into()),
+            }
+        }
+        if !matches!(
+            obj.get("typowe_czesci"),
+            None | Some(Value::Null) | Some(Value::Array(_))
+        ) {
+            blad(poz(""), "typowe_czesci", "oczekiwano listy".into());
+        }
+    }
+}
+
 /// Import szablonów mebli; szablon o tym samym kodzie jest nadpisywany.
+///
+/// Decyzja: plik jest sprawdzany w całości PRZED zapisem i przy jakimkolwiek błędzie
+/// odrzucany (422 z listą: pozycja, pole, powód). Częściowy import szablonów byłby mylący –
+/// szablon z pominiętymi wierszami nadpisałby wbudowany o tym samym kodzie i „zgubił”
+/// elementy bez widocznego śladu. Pominięcia wynikające z zasad formatu (udział < 0,3) są
+/// opisane w raporcie (`ostrzezenia`).
 pub async fn importuj_szablony(pula: &SqlitePool, j: &Value) -> Wynik<RaportImportu> {
     let lista = j
         .get("szablony")
@@ -547,20 +796,67 @@ pub async fn importuj_szablony(pula: &SqlitePool, j: &Value) -> Wynik<RaportImpo
         .ok_or_else(|| {
             BladApi::NieprawidloweDane("plik szablonów musi zawierać listę „szablony”".into())
         })?;
-    let mut raport = RaportImportu::default();
-    let mut tx = pula.begin().await?;
+    if lista.len() > MAKS_SZABLONOW_IMPORTU {
+        return Err(BladApi::NieprawidloweDane(format!(
+            "plik zawiera {} szablonów – najwyżej {MAKS_SZABLONOW_IMPORTU}",
+            lista.len()
+        )));
+    }
+    let mut bledy = Vec::new();
     for (i, v) in lista.iter().enumerate() {
-        let Some((kod, nazwa, tytul, dane)) = szablon_z_pliku(v) else {
-            raport.pominiete += 1;
-            raport
-                .ostrzezenia
-                .push(format!("pozycja {} bez nazwy – pominięto", i + 1));
-            continue;
-        };
-        if kod.is_empty() {
-            raport.pominiete += 1;
-            continue;
+        sprawdz_szablon(i, v, &mut bledy);
+    }
+    let mut odczytane = Vec::new();
+    let mut kody: Vec<String> = Vec::new();
+    let mut raport = RaportImportu::default();
+    if bledy.is_empty() {
+        for (i, v) in lista.iter().enumerate() {
+            match szablon_z_pliku(v) {
+                Some((kod, nazwa, tytul, dane)) if !kod.is_empty() => {
+                    if kody.contains(&kod) {
+                        bledy.push(BladPozycji {
+                            pozycja: format!("szablon {} („{nazwa}”)", i + 1),
+                            pole: "kod".into(),
+                            powod: format!("kod „{kod}” powtarza się w pliku"),
+                        });
+                    }
+                    let pominiete = tablica(v, &["wiersze_materialowe"])
+                        .iter()
+                        .chain(tablica(v, &["wyposazenie"]))
+                        .filter(|w| {
+                            w.get("udzial_sekcji")
+                                .and_then(Value::as_f64)
+                                .is_some_and(|u| u < PROG_UDZIALU)
+                        })
+                        .count();
+                    if pominiete > 0 {
+                        raport.ostrzezenia.push(format!(
+                            "szablon „{nazwa}”: pominięto {pominiete} rzadkich wierszy (udział w sekcjach < 30%)"
+                        ));
+                    }
+                    kody.push(kod.clone());
+                    odczytane.push((i, kod, nazwa, tytul, dane));
+                }
+                _ => bledy.push(BladPozycji {
+                    pozycja: format!("szablon {}", i + 1),
+                    pole: "nazwa".into(),
+                    powod: "nie da się ustalić kodu szablonu z nazwy".into(),
+                }),
+            }
         }
+    }
+    if !bledy.is_empty() {
+        let n = bledy.len();
+        bledy.truncate(200);
+        return Err(BladApi::BledyPozycji {
+            komunikat: format!(
+                "Plik szablonów zawiera błędy ({n}) – nic nie zaimportowano. Popraw plik i spróbuj ponownie."
+            ),
+            bledy,
+        });
+    }
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
+    for (i, kod, nazwa, tytul, dane) in odczytane {
         let json = serde_json::to_string(&dane).unwrap_or_else(|_| "{}".into());
         let istnieje: Option<i64> =
             sqlx::query_scalar("SELECT id FROM szablony_mebli WHERE kod = ?1")
@@ -647,6 +943,70 @@ mod testy {
         .await
         .unwrap();
         assert_eq!(n, 1);
+    }
+
+    #[tokio::test]
+    async fn import_szablonow_odrzuca_bledny_plik_w_calosci() {
+        let pula = otworz_w_pamieci().await.unwrap();
+        let j = serde_json::json!({ "szablony": [
+            { "nazwa": "Dobry", "wiersze": [{ "rodzaj": "Korpus" }] },
+            { "nazwa": "Zły", "wiersze": [
+                { "rodzaj": "Korpus", "podgrupa": "nieznana" },
+                "tekst zamiast wiersza",
+                { "rodzaj": 5, "kolor": "x" }
+            ] },
+            { "czesci": ["A"] }
+        ]});
+        let Err(BladApi::BledyPozycji { bledy, .. }) = importuj_szablony(&pula, &j).await else {
+            panic!("oczekiwano listy błędów");
+        };
+        let pola: Vec<(&str, &str)> = bledy
+            .iter()
+            .map(|b| (b.pozycja.as_str(), b.pole.as_str()))
+            .collect();
+        assert!(
+            pola.contains(&("szablon 2 („Zły”), wiersz 1", "podgrupa")),
+            "{pola:?}"
+        );
+        assert!(pola
+            .iter()
+            .any(|(p, _)| p.starts_with("szablon 2 („Zły”), wiersz 2")));
+        assert!(pola.contains(&("szablon 2 („Zły”), wiersz 3", "rodzaj")));
+        assert!(pola.contains(&("szablon 2 („Zły”), wiersz 3", "kolor")));
+        assert!(pola.contains(&("szablon 3", "nazwa")));
+        // nic nie zapisano – także poprawny szablon 1
+        assert!(lista(&pula)
+            .await
+            .unwrap()
+            .iter()
+            .all(|s| s.nazwa != "Dobry"));
+    }
+
+    #[tokio::test]
+    async fn import_slownikow_tysiecy_pozycji_jest_szybki() {
+        let pula = otworz_w_pamieci().await.unwrap();
+        let wartosci: Vec<String> = (0..4000).map(|i| format!("Dekor testowy {i}")).collect();
+        let j = serde_json::json!({ "slowniki": { "dekor": wartosci } });
+        let start = std::time::Instant::now();
+        let r = importuj_slowniki(&pula, &j).await.unwrap();
+        let czas = start.elapsed();
+        assert_eq!(r.dodane.get("dekor"), Some(&4000));
+        assert!(
+            czas.as_secs_f64() < 3.0,
+            "import 4000 pozycji trwał {czas:?}"
+        );
+        let r2 = importuj_slowniki(&pula, &j).await.unwrap();
+        assert!(r2.dodane.is_empty());
+        assert_eq!(r2.pominiete, 4000);
+        let za_duzo: Vec<String> = (0..MAKS_POZYCJI_IMPORTU + 1)
+            .map(|i| format!("x{i}"))
+            .collect();
+        assert!(importuj_slowniki(
+            &pula,
+            &serde_json::json!({ "slowniki": { "dekor": za_duzo } })
+        )
+        .await
+        .is_err());
     }
 
     #[tokio::test]

@@ -11,9 +11,12 @@
 //! * `POST /czesci/{id}/wiersze`, `POST /czesci/{id}/wiersze/kolejnosc`
 //! * `PUT|DELETE /wiersze/{id}`, `POST /wiersze/{id}/kopiuj-material`
 //! * `POST /specyfikacje/{id}/zdjecia?sekcja_id=&czesc_id=&nazwa=&podpis=` (treść = bajty JPG/PNG)
-//! * `PUT|DELETE /zdjecia/{id}`, `GET /pliki/{id}` (także `?klucz=` dla `<img src>`)
+//! * `PUT|DELETE /zdjecia/{id}`, `GET /pliki/{id}?podglad=1` (klucz tylko w nagłówku)
 //!
 //! Każda zmiana specyfikacji zwraca `{id, specyfikacja}` (całe aktualne drzewo).
+//! `PUT /sekcje|czesci|wiersze/{id}` i `PUT /wersje-oferty/{id}` to ZMIANY CZĘŚCIOWE: treść
+//! zawiera tylko zmienione pola i opcjonalnie `poprzednie` (wartości widziane przed edycją) –
+//! konflikt z cudzą zmianą tego samego pola → 409 (`crate::zmiany`).
 //!
 //! Oferty:
 //! * `GET /oferty?status=&klient_id=&szukaj=`, `POST /oferty`
@@ -25,8 +28,7 @@
 //! Pozostałe: `GET /szablony-mebli`, `POST /import/slowniki`, `POST /import/szablony-mebli`,
 //! `GET|PUT /ustawienia/firma`.
 
-use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
@@ -41,7 +43,9 @@ use crate::oferty::{self, PelnaWersja};
 use crate::pliki;
 use crate::specyfikacje::{self as spec, WynikZmiany};
 use crate::szablony;
+use crate::wejscie::{Cialo, Parametry, Sciezka, Tresc};
 use crate::zdarzenia::{Operacja, Zdarzenie};
+use crate::zmiany::ZmianaCzesciowa;
 use crate::{eksport, slowniki};
 
 pub fn trasy() -> Router<StanApi> {
@@ -86,11 +90,11 @@ pub fn trasy() -> Router<StanApi> {
         .route("/szablony-mebli", get(lista_szablonow))
         .route(
             "/import/slowniki",
-            post(import_slownikow).layer(DefaultBodyLimit::max(16 * 1024 * 1024)),
+            post(import_slownikow).layer(DefaultBodyLimit::max(szablony::MAKS_PLIK_IMPORTU)),
         )
         .route(
             "/import/szablony-mebli",
-            post(import_szablonow).layer(DefaultBodyLimit::max(16 * 1024 * 1024)),
+            post(import_szablonow).layer(DefaultBodyLimit::max(szablony::MAKS_PLIK_IMPORTU)),
         )
         .route("/ustawienia/firma", get(pobierz_firme).put(zapisz_firme))
         .route("/slowniki-podpowiedzi", get(podpowiedzi))
@@ -102,9 +106,10 @@ fn zmiana_spec(stan: &StanApi, w: &WynikZmiany) {
         id: w.specyfikacja.id,
         operacja: Operacja::Zmiana,
     });
+    // Właściciel (oferta, umowa…) decyduje, który zasób odświeżyć na innych stanowiskach.
     if let Some(wl) = &w.specyfikacja.wlasciciel {
         stan.zdarzenia.wyslij(Zdarzenie {
-            zasob: "oferty",
+            zasob: wl.zasob,
             id: wl.nadrzedny_id,
             operacja: Operacja::Zmiana,
         });
@@ -130,128 +135,137 @@ fn ok_spec(stan: &StanApi, w: WynikZmiany) -> OdpSpec {
 
 async fn pobierz_specyfikacje(
     State(stan): State<StanApi>,
-    Path(id): Path<i64>,
+    Sciezka(id): Sciezka<i64>,
 ) -> Wynik<Json<spec::Specyfikacja>> {
     Ok(Json(spec::pobierz(&stan.pula, id).await?))
 }
 
 async fn dodaj_sekcje(
     State(stan): State<StanApi>,
-    Path(id): Path<i64>,
-    Json(d): Json<spec::DaneSekcji>,
+    Sciezka(id): Sciezka<i64>,
+    Cialo(d): Cialo<spec::DaneSekcji>,
 ) -> OdpSpec {
     ok_spec(&stan, spec::dodaj_sekcje(&stan.pula, id, d).await?)
 }
 
 async fn zmien_sekcje(
     State(stan): State<StanApi>,
-    Path(id): Path<i64>,
-    Json(d): Json<spec::DaneSekcji>,
+    Sciezka(id): Sciezka<i64>,
+    Cialo(v): Cialo<Value>,
 ) -> OdpSpec {
-    ok_spec(&stan, spec::zmien_sekcje(&stan.pula, id, d).await?)
+    let z = ZmianaCzesciowa::z_json(v, spec::POLA_SEKCJI)?;
+    ok_spec(
+        &stan,
+        spec::zmien_sekcje_czesciowo(&stan.pula, id, z).await?,
+    )
 }
 
-async fn usun_sekcje(State(stan): State<StanApi>, Path(id): Path<i64>) -> OdpSpec {
+async fn usun_sekcje(State(stan): State<StanApi>, Sciezka(id): Sciezka<i64>) -> OdpSpec {
     ok_spec(&stan, spec::usun_sekcje(&stan.pula, id).await?)
 }
 
 async fn kolejnosc_sekcji(
     State(stan): State<StanApi>,
-    Path(id): Path<i64>,
-    Json(k): Json<spec::Kolejnosc>,
+    Sciezka(id): Sciezka<i64>,
+    Cialo(k): Cialo<spec::Kolejnosc>,
 ) -> OdpSpec {
     ok_spec(&stan, spec::kolejnosc_sekcji(&stan.pula, id, k).await?)
 }
 
 async fn kopiuj_sekcje(
     State(stan): State<StanApi>,
-    Path(id): Path<i64>,
-    Json(d): Json<spec::DaneKopii>,
+    Sciezka(id): Sciezka<i64>,
+    Cialo(d): Cialo<spec::DaneKopii>,
 ) -> OdpSpec {
     ok_spec(&stan, spec::kopiuj_sekcje(&stan.pula, id, d).await?)
 }
 
 async fn sekcja_z_szablonu(
     State(stan): State<StanApi>,
-    Path(id): Path<i64>,
-    Json(d): Json<szablony::WstawSekcje>,
+    Sciezka(id): Sciezka<i64>,
+    Cialo(d): Cialo<szablony::WstawSekcje>,
 ) -> OdpSpec {
     ok_spec(&stan, szablony::wstaw_sekcje(&stan.pula, id, d).await?)
 }
 
 async fn dodaj_czesc(
     State(stan): State<StanApi>,
-    Path(id): Path<i64>,
-    Json(d): Json<spec::DaneCzesci>,
+    Sciezka(id): Sciezka<i64>,
+    Cialo(d): Cialo<spec::DaneCzesci>,
 ) -> OdpSpec {
     ok_spec(&stan, spec::dodaj_czesc(&stan.pula, id, d).await?)
 }
 
 async fn zmien_czesc(
     State(stan): State<StanApi>,
-    Path(id): Path<i64>,
-    Json(d): Json<spec::DaneCzesci>,
+    Sciezka(id): Sciezka<i64>,
+    Cialo(v): Cialo<Value>,
 ) -> OdpSpec {
-    ok_spec(&stan, spec::zmien_czesc(&stan.pula, id, d).await?)
+    let z = ZmianaCzesciowa::z_json(v, spec::POLA_CZESCI)?;
+    ok_spec(&stan, spec::zmien_czesc_czesciowo(&stan.pula, id, z).await?)
 }
 
-async fn usun_czesc(State(stan): State<StanApi>, Path(id): Path<i64>) -> OdpSpec {
+async fn usun_czesc(State(stan): State<StanApi>, Sciezka(id): Sciezka<i64>) -> OdpSpec {
     ok_spec(&stan, spec::usun_czesc(&stan.pula, id).await?)
 }
 
 async fn kolejnosc_czesci(
     State(stan): State<StanApi>,
-    Path(id): Path<i64>,
-    Json(k): Json<spec::Kolejnosc>,
+    Sciezka(id): Sciezka<i64>,
+    Cialo(k): Cialo<spec::Kolejnosc>,
 ) -> OdpSpec {
     ok_spec(&stan, spec::kolejnosc_czesci(&stan.pula, id, k).await?)
 }
 
 async fn kopiuj_czesc(
     State(stan): State<StanApi>,
-    Path(id): Path<i64>,
-    Json(d): Json<spec::DaneKopii>,
+    Sciezka(id): Sciezka<i64>,
+    Cialo(d): Cialo<spec::DaneKopii>,
 ) -> OdpSpec {
     ok_spec(&stan, spec::kopiuj_czesc(&stan.pula, id, d).await?)
 }
 
 async fn czesc_z_szablonu(
     State(stan): State<StanApi>,
-    Path(id): Path<i64>,
-    Json(d): Json<szablony::WstawCzesc>,
+    Sciezka(id): Sciezka<i64>,
+    Cialo(d): Cialo<szablony::WstawCzesc>,
 ) -> OdpSpec {
     ok_spec(&stan, szablony::wstaw_czesc(&stan.pula, id, d).await?)
 }
 
 async fn dodaj_wiersz(
     State(stan): State<StanApi>,
-    Path(id): Path<i64>,
-    Json(d): Json<spec::DaneWiersza>,
+    Sciezka(id): Sciezka<i64>,
+    Cialo(d): Cialo<spec::DaneWiersza>,
 ) -> OdpSpec {
     ok_spec(&stan, spec::dodaj_wiersz(&stan.pula, id, d).await?)
 }
 
 async fn zmien_wiersz(
     State(stan): State<StanApi>,
-    Path(id): Path<i64>,
-    Json(d): Json<spec::DaneWiersza>,
+    Sciezka(id): Sciezka<i64>,
+    Cialo(v): Cialo<Value>,
 ) -> OdpSpec {
-    ok_spec(&stan, spec::zmien_wiersz(&stan.pula, id, d).await?)
+    let z = ZmianaCzesciowa::z_json(v, spec::POLA_WIERSZA)?;
+    ok_spec(
+        &stan,
+        spec::zmien_wiersz_czesciowo(&stan.pula, id, z).await?,
+    )
 }
 
-async fn usun_wiersz(State(stan): State<StanApi>, Path(id): Path<i64>) -> OdpSpec {
+async fn usun_wiersz(State(stan): State<StanApi>, Sciezka(id): Sciezka<i64>) -> OdpSpec {
     ok_spec(&stan, spec::usun_wiersz(&stan.pula, id).await?)
 }
 
 async fn kolejnosc_wierszy(
     State(stan): State<StanApi>,
-    Path(id): Path<i64>,
-    Json(k): Json<spec::Kolejnosc>,
+    Sciezka(id): Sciezka<i64>,
+    Cialo(k): Cialo<spec::Kolejnosc>,
 ) -> OdpSpec {
     ok_spec(&stan, spec::kolejnosc_wierszy(&stan.pula, id, k).await?)
 }
 
-async fn kopiuj_material(State(stan): State<StanApi>, Path(id): Path<i64>) -> OdpSpec {
+async fn kopiuj_material(State(stan): State<StanApi>, Sciezka(id): Sciezka<i64>) -> OdpSpec {
     ok_spec(&stan, spec::kopiuj_material_w_dol(&stan.pula, id).await?)
 }
 
@@ -259,33 +273,63 @@ async fn kopiuj_material(State(stan): State<StanApi>, Path(id): Path<i64>) -> Od
 
 async fn dodaj_zdjecie(
     State(stan): State<StanApi>,
-    Path(id): Path<i64>,
-    Query(p): Query<pliki::ParametryZdjecia>,
-    tresc: Bytes,
+    Sciezka(id): Sciezka<i64>,
+    Parametry(p): Parametry<pliki::ParametryZdjecia>,
+    Tresc(tresc): Tresc,
 ) -> Wynik<(StatusCode, Json<WynikZmiany>)> {
-    let w = pliki::dodaj_zdjecie(&stan.pula, &stan.folder_danych, id, p, &tresc).await?;
+    let w = pliki::dodaj_zdjecie(&stan.pula, &stan.folder_danych, id, p, tresc).await?;
     zmiana_spec(&stan, &w);
     Ok((StatusCode::CREATED, Json(w)))
 }
 
 async fn zmien_zdjecie(
     State(stan): State<StanApi>,
-    Path(id): Path<i64>,
-    Json(d): Json<pliki::DaneZdjecia>,
+    Sciezka(id): Sciezka<i64>,
+    Cialo(d): Cialo<pliki::DaneZdjecia>,
 ) -> OdpSpec {
     ok_spec(&stan, pliki::zmien_zdjecie(&stan.pula, id, d).await?)
 }
 
-async fn usun_zdjecie(State(stan): State<StanApi>, Path(id): Path<i64>) -> OdpSpec {
-    ok_spec(&stan, pliki::usun_zdjecie(&stan.pula, id).await?)
+async fn usun_zdjecie(State(stan): State<StanApi>, Sciezka(id): Sciezka<i64>) -> OdpSpec {
+    let w = pliki::usun_zdjecie(&stan.pula, id).await?;
+    sprzataj(&stan);
+    ok_spec(&stan, w)
 }
 
-async fn pobierz_plik(State(stan): State<StanApi>, Path(id): Path<i64>) -> Wynik<Response> {
-    let (mime, _nazwa, bajty) = pliki::odczytaj(&stan.pula, &stan.folder_danych, id).await?;
+/// Sprzątanie plików bez odwołań w tle (nie opóźnia odpowiedzi).
+fn sprzataj(stan: &StanApi) {
+    let pula = stan.pula.clone();
+    let folder = stan.folder_danych.clone();
+    tokio::spawn(async move {
+        if let Err(e) = pliki::sprzataj_nieuzywane(&pula, &folder).await {
+            tracing::warn!("Sprzątanie nieużywanych plików nie powiodło się: {e}");
+        }
+    });
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ParametryPliku {
+    podglad: Option<u8>,
+}
+
+async fn pobierz_plik(
+    State(stan): State<StanApi>,
+    Sciezka(id): Sciezka<i64>,
+    Parametry(p): Parametry<ParametryPliku>,
+) -> Wynik<Response> {
+    let (mime, _nazwa, bajty) = pliki::odczytaj(
+        &stan.pula,
+        &stan.folder_danych,
+        id,
+        p.podglad.unwrap_or(0) != 0,
+    )
+    .await?;
     Ok((
         [
             (header::CONTENT_TYPE, mime),
             (header::CACHE_CONTROL, "private, max-age=86400".into()),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".into()),
         ],
         bajty,
     )
@@ -296,14 +340,14 @@ async fn pobierz_plik(State(stan): State<StanApi>, Path(id): Path<i64>) -> Wynik
 
 async fn lista_ofert(
     State(stan): State<StanApi>,
-    Query(f): Query<oferty::FiltrOfert>,
+    Parametry(f): Parametry<oferty::FiltrOfert>,
 ) -> Wynik<Json<Vec<oferty::OfertaNaLiscie>>> {
     Ok(Json(oferty::lista(&stan.pula, f).await?))
 }
 
 async fn dodaj_oferte(
     State(stan): State<StanApi>,
-    Json(d): Json<oferty::DaneNowejOferty>,
+    Cialo(d): Cialo<oferty::DaneNowejOferty>,
 ) -> Wynik<(StatusCode, Json<PelnaWersja>)> {
     let p = oferty::dodaj(&stan.pula, d).await?;
     zmiana_oferty(&stan, p.oferta.id, Operacja::Dodanie);
@@ -312,15 +356,15 @@ async fn dodaj_oferte(
 
 async fn szczegoly_oferty(
     State(stan): State<StanApi>,
-    Path(id): Path<i64>,
+    Sciezka(id): Sciezka<i64>,
 ) -> Wynik<Json<oferty::SzczegolyOferty>> {
     Ok(Json(oferty::szczegoly(&stan.pula, id).await?))
 }
 
 async fn zmien_oferte(
     State(stan): State<StanApi>,
-    Path(id): Path<i64>,
-    Json(d): Json<oferty::DaneOferty>,
+    Sciezka(id): Sciezka<i64>,
+    Cialo(d): Cialo<oferty::DaneOferty>,
 ) -> Wynik<Json<oferty::SzczegolyOferty>> {
     let s = oferty::zmien_klienta(&stan.pula, id, d).await?;
     zmiana_oferty(&stan, id, Operacja::Zmiana);
@@ -329,24 +373,25 @@ async fn zmien_oferte(
 
 async fn zmien_status(
     State(stan): State<StanApi>,
-    Path(id): Path<i64>,
-    Json(z): Json<oferty::ZmianaStatusu>,
+    Sciezka(id): Sciezka<i64>,
+    Cialo(z): Cialo<oferty::ZmianaStatusu>,
 ) -> Wynik<Json<oferty::SzczegolyOferty>> {
     let s = oferty::zmien_status(&stan.pula, id, z).await?;
     zmiana_oferty(&stan, id, Operacja::Zmiana);
     Ok(Json(s))
 }
 
-async fn usun_oferte(State(stan): State<StanApi>, Path(id): Path<i64>) -> Wynik<StatusCode> {
+async fn usun_oferte(State(stan): State<StanApi>, Sciezka(id): Sciezka<i64>) -> Wynik<StatusCode> {
     oferty::usun(&stan.pula, id).await?;
+    sprzataj(&stan);
     zmiana_oferty(&stan, id, Operacja::Usuniecie);
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn nowa_wersja(
     State(stan): State<StanApi>,
-    Path(id): Path<i64>,
-    Json(d): Json<oferty::DaneNowejWersji>,
+    Sciezka(id): Sciezka<i64>,
+    Cialo(d): Cialo<oferty::DaneNowejWersji>,
 ) -> Wynik<(StatusCode, Json<PelnaWersja>)> {
     let p = oferty::nowa_wersja(&stan.pula, id, d).await?;
     zmiana_oferty(&stan, id, Operacja::Zmiana);
@@ -362,25 +407,26 @@ struct ParametryPorownania {
 
 async fn porownaj(
     State(stan): State<StanApi>,
-    Path(id): Path<i64>,
-    Query(p): Query<ParametryPorownania>,
+    Sciezka(id): Sciezka<i64>,
+    Parametry(p): Parametry<ParametryPorownania>,
 ) -> Wynik<Json<oferty::Porownanie>> {
     Ok(Json(oferty::porownaj(&stan.pula, id, p.z, p.do_).await?))
 }
 
 async fn pobierz_wersje(
     State(stan): State<StanApi>,
-    Path(id): Path<i64>,
+    Sciezka(id): Sciezka<i64>,
 ) -> Wynik<Json<PelnaWersja>> {
     Ok(Json(oferty::pelna_wersja(&stan.pula, id).await?))
 }
 
 async fn zmien_wersje(
     State(stan): State<StanApi>,
-    Path(id): Path<i64>,
-    Json(d): Json<oferty::DaneWersji>,
+    Sciezka(id): Sciezka<i64>,
+    Cialo(v): Cialo<Value>,
 ) -> Wynik<Json<PelnaWersja>> {
-    let p = oferty::zmien_wersje(&stan.pula, id, d).await?;
+    let z = ZmianaCzesciowa::z_json(v, oferty::POLA_WERSJI)?;
+    let p = oferty::zmien_wersje_czesciowo(&stan.pula, id, z).await?;
     zmiana_oferty(&stan, p.oferta.id, Operacja::Zmiana);
     Ok(Json(p))
 }
@@ -393,8 +439,8 @@ struct ParametryEksportu {
 
 async fn eksportuj(
     State(stan): State<StanApi>,
-    Path((id, format)): Path<(i64, String)>,
-    Query(p): Query<ParametryEksportu>,
+    Sciezka((id, format)): Sciezka<(i64, String)>,
+    Parametry(p): Parametry<ParametryEksportu>,
 ) -> Wynik<Response> {
     let (mime, rozszerzenie) = match format.as_str() {
         "pdf" => ("application/pdf", "pdf"),
@@ -417,6 +463,7 @@ async fn eksportuj(
     )
     .await?;
     let bajty = tokio::task::spawn_blocking(move || {
+        // genpdf i docx-rs są synchroniczne – poza wątkami obsługi żądań.
         if rozszerzenie == "pdf" {
             eksport::renderuj_pdf(&dok)
         } else {
@@ -446,7 +493,7 @@ async fn lista_szablonow(State(stan): State<StanApi>) -> Wynik<Json<Vec<szablony
 
 async fn import_slownikow(
     State(stan): State<StanApi>,
-    Json(j): Json<Value>,
+    Cialo(j): Cialo<Value>,
 ) -> Wynik<Json<szablony::RaportImportu>> {
     let r = szablony::importuj_slowniki(&stan.pula, &j).await?;
     stan.zdarzenia.wyslij(Zdarzenie {
@@ -459,7 +506,7 @@ async fn import_slownikow(
 
 async fn import_szablonow(
     State(stan): State<StanApi>,
-    Json(j): Json<Value>,
+    Cialo(j): Cialo<Value>,
 ) -> Wynik<Json<szablony::RaportImportu>> {
     let r = szablony::importuj_szablony(&stan.pula, &j).await?;
     stan.zdarzenia.wyslij(Zdarzenie {
@@ -476,7 +523,7 @@ async fn pobierz_firme(State(stan): State<StanApi>) -> Wynik<Json<DaneFirmy>> {
 
 async fn zapisz_firme(
     State(stan): State<StanApi>,
-    Json(d): Json<DaneFirmy>,
+    Cialo(d): Cialo<DaneFirmy>,
 ) -> Wynik<Json<DaneFirmy>> {
     let f = firma::zapisz(&stan.pula, d).await?;
     stan.zdarzenia.wyslij(Zdarzenie {
@@ -492,10 +539,14 @@ async fn zapisz_firme(
 async fn podpowiedzi(
     State(stan): State<StanApi>,
 ) -> Wynik<Json<std::collections::BTreeMap<String, Vec<slowniki::PozycjaSlownika>>>> {
-    let mut wynik = std::collections::BTreeMap::new();
-    for s in slowniki::lista_slownikow(&stan.pula).await? {
-        let p = slowniki::pozycje(&stan.pula, &s.kod).await?;
-        wynik.insert(s.kod, p);
+    let mut wynik: std::collections::BTreeMap<String, Vec<slowniki::PozycjaSlownika>> =
+        slowniki::lista_slownikow(&stan.pula)
+            .await?
+            .into_iter()
+            .map(|s| (s.kod, Vec::new()))
+            .collect();
+    for p in slowniki::wszystkie_pozycje(&stan.pula).await? {
+        wynik.entry(p.slownik_kod.clone()).or_default().push(p);
     }
     Ok(Json(wynik))
 }

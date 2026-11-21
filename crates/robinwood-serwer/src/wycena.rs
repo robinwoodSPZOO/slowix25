@@ -8,8 +8,12 @@
 //! * Rabat za całość (procentowy, w setnych procenta) liczony jest od sumy za meble PRZED
 //!   rabatem za termin; oba rabaty odejmowane są od sumy za meble. Wynik nie spada poniżej zera.
 //! * Sprzęt AGD (sekcje typu `agd`) liczony osobno: suma pozycji cena × ilość, bez rabatów,
-//!   ze stawką VAT sekcji (gdy ustawiona) albo stawką oferty. Pozycje „po stronie klienta”
-//!   i „poza wyceną” nie wchodzą do sumy.
+//!   ze stawką VAT sekcji (domyślnie 23%). Pozycje „po stronie klienta” i „poza wyceną” nie
+//!   wchodzą do sumy.
+//! * Arytmetyka z kontrolą przepełnienia: zamiast paniki albo cicho błędnej sumy wycena
+//!   zwraca pustą wycenę z błędem w `bledy` (dokument nie zostanie wtedy utworzony).
+//! * Rabaty większe niż suma za meble to błąd blokujący dokument (`bledy`), a nie ostrzeżenie –
+//!   rachunek „100 − 500 − 5 = 0” byłby nieczytelny dla klienta.
 //! * Tryb cen „brutto” (domyślny): wpisane kwoty są brutto, netto = brutto·100/(100+VAT).
 //!   Tryb „netto”: VAT = netto·stawka/100 doliczany do kwoty.
 //! * Marża (dane wewnętrzne) = meble netto po rabatach − koszt własny; AGD nie wchodzi do marży.
@@ -148,54 +152,121 @@ pub struct Wycena {
     pub suma_brutto_gr: i64,
     pub wewnetrzne: DaneWewnetrzne,
     pub ostrzezenia: Vec<String>,
+    /// Błędy blokujące dokument dla klienta (przepełnienie, rabaty większe niż suma).
+    pub bledy: Vec<String>,
 }
 
-/// Dzielenie całkowite z zaokrągleniem połówek od zera.
-pub fn dziel_zaokraglij(licznik: i128, mianownik: i128) -> i64 {
-    assert!(mianownik != 0, "dzielenie przez zero");
+/// Przepełnienie przy liczeniu (kwoty poza zakresem).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Przepelnienie;
+
+type W<T> = Result<T, Przepelnienie>;
+
+fn dodaj(a: i64, b: i64) -> W<i64> {
+    a.checked_add(b).ok_or(Przepelnienie)
+}
+
+fn odejmij(a: i64, b: i64) -> W<i64> {
+    a.checked_sub(b).ok_or(Przepelnienie)
+}
+
+fn do_i64(x: i128) -> W<i64> {
+    i64::try_from(x).map_err(|_| Przepelnienie)
+}
+
+/// Komunikat błędu przepełnienia (lista ofert pokazuje go zamiast sumy).
+pub const BLAD_PRZEPELNIENIA: &str =
+    "Kwoty w ofercie są poza zakresem (za duża cena lub ilość) – popraw ceny i ilości w specyfikacji";
+
+/// Dzielenie całkowite z zaokrągleniem połówek od zera (bez przepełnienia: błąd, gdy
+/// wynik nie mieści się w `i64`).
+pub fn dziel_zaokraglij_spr(licznik: i128, mianownik: i128) -> W<i64> {
+    if mianownik == 0 {
+        return Err(Przepelnienie);
+    }
     let (l, m) = if mianownik < 0 {
-        (-licznik, -mianownik)
+        (licznik.checked_neg().ok_or(Przepelnienie)?, -mianownik)
     } else {
         (licznik, mianownik)
     };
+    let dwa_m = m.checked_mul(2).ok_or(Przepelnienie)?;
     let wynik = if l >= 0 {
-        (2 * l + m) / (2 * m)
+        l.checked_mul(2)
+            .and_then(|x| x.checked_add(m))
+            .ok_or(Przepelnienie)?
+            / dwa_m
     } else {
-        -((2 * -l + m) / (2 * m))
+        let l = l.checked_neg().ok_or(Przepelnienie)?;
+        -(l.checked_mul(2)
+            .and_then(|x| x.checked_add(m))
+            .ok_or(Przepelnienie)?
+            / dwa_m)
     };
-    wynik as i64
+    do_i64(wynik)
+}
+
+/// Dzielenie z zaokrągleniem połówek od zera; poza zakresem `i64` – nasycenie (do testów
+/// i formatowania; wycena używa [`dziel_zaokraglij_spr`]).
+pub fn dziel_zaokraglij(licznik: i128, mianownik: i128) -> i64 {
+    dziel_zaokraglij_spr(licznik, mianownik).unwrap_or(if (licznik < 0) != (mianownik < 0) {
+        i64::MIN
+    } else {
+        i64::MAX
+    })
 }
 
 /// Kwota × ilość (ilość może być ułamkowa, np. 2,5 mb), zaokrąglona do grosza.
-pub fn razy_ilosc(cena_gr: i64, ilosc: f64) -> i64 {
+pub fn razy_ilosc_spr(cena_gr: i64, ilosc: f64) -> W<i64> {
     // Ilość z bazy ma najwyżej kilka miejsc po przecinku – liczymy w tysięcznych, żeby uniknąć
     // błędów zmiennoprzecinkowych przy zaokrąglaniu połówek.
-    let tysieczne = (ilosc * 1000.0).round() as i128;
-    dziel_zaokraglij(cena_gr as i128 * tysieczne, 1000)
+    let t = (ilosc * 1000.0).round();
+    if !t.is_finite() || t.abs() > 1e30 {
+        return Err(Przepelnienie);
+    }
+    let tysieczne = t as i128;
+    let iloczyn = (cena_gr as i128)
+        .checked_mul(tysieczne)
+        .ok_or(Przepelnienie)?;
+    dziel_zaokraglij_spr(iloczyn, 1000)
 }
 
-/// Rozbija kwotę na netto/VAT/brutto zależnie od trybu wpisywania cen.
-pub fn kwoty_vat(kwota_gr: i64, stawka: i64, tryb: TrybCen) -> KwotyVat {
-    match tryb {
+/// Jak [`razy_ilosc_spr`], z nasyceniem przy przepełnieniu (do dokumentów, gdzie wycena
+/// i tak została już sprawdzona).
+pub fn razy_ilosc(cena_gr: i64, ilosc: f64) -> i64 {
+    razy_ilosc_spr(cena_gr, ilosc).unwrap_or(i64::MAX)
+}
+
+fn kwoty_vat_spr(kwota_gr: i64, stawka: i64, tryb: TrybCen) -> W<KwotyVat> {
+    Ok(match tryb {
         TrybCen::Brutto => {
-            let netto = dziel_zaokraglij(kwota_gr as i128 * 100, 100 + stawka as i128);
+            let netto = dziel_zaokraglij_spr(kwota_gr as i128 * 100, 100 + stawka as i128)?;
             KwotyVat {
                 stawka,
                 netto_gr: netto,
-                vat_gr: kwota_gr - netto,
+                vat_gr: odejmij(kwota_gr, netto)?,
                 brutto_gr: kwota_gr,
             }
         }
         TrybCen::Netto => {
-            let vat = dziel_zaokraglij(kwota_gr as i128 * stawka as i128, 100);
+            let vat = dziel_zaokraglij_spr(kwota_gr as i128 * stawka as i128, 100)?;
             KwotyVat {
                 stawka,
                 netto_gr: kwota_gr,
                 vat_gr: vat,
-                brutto_gr: kwota_gr + vat,
+                brutto_gr: dodaj(kwota_gr, vat)?,
             }
         }
-    }
+    })
+}
+
+/// Rozbija kwotę na netto/VAT/brutto zależnie od trybu wpisywania cen.
+pub fn kwoty_vat(kwota_gr: i64, stawka: i64, tryb: TrybCen) -> KwotyVat {
+    kwoty_vat_spr(kwota_gr, stawka, tryb).unwrap_or(KwotyVat {
+        stawka,
+        netto_gr: 0,
+        vat_gr: 0,
+        brutto_gr: 0,
+    })
 }
 
 fn etykieta(s: &SekcjaDoWyceny) -> String {
@@ -205,16 +276,57 @@ fn etykieta(s: &SekcjaDoWyceny) -> String {
     }
 }
 
-/// Główna funkcja wyceny.
+/// Główna funkcja wyceny. Przy przepełnieniu zwraca pustą wycenę z błędem w `bledy`
+/// (nigdy nie panikuje).
 pub fn wylicz(p: &ParametryWyceny, sekcje: &[SekcjaDoWyceny]) -> Wycena {
+    match wylicz_spr(p, sekcje) {
+        Ok(w) => w,
+        Err(Przepelnienie) => Wycena {
+            poziom: p.poziom,
+            tryb_cen: p.tryb_cen,
+            sekcje: vec![],
+            suma_meble_gr: 0,
+            rabat_termin_gr: p.rabat_termin_gr,
+            rabat_calosc_bp: p.rabat_calosc_bp,
+            rabat_calosc_gr: 0,
+            meble_po_rabatach_gr: 0,
+            meble: KwotyVat {
+                stawka: p.stawka_vat,
+                netto_gr: 0,
+                vat_gr: 0,
+                brutto_gr: 0,
+            },
+            suma_agd_gr: 0,
+            agd: vec![],
+            suma_netto_gr: 0,
+            suma_vat_gr: 0,
+            suma_brutto_gr: 0,
+            wewnetrzne: DaneWewnetrzne {
+                koszt_wlasny_gr: p.koszt_wlasny_gr,
+                marza_gr: None,
+                marza_bp: None,
+            },
+            ostrzezenia: vec![],
+            bledy: vec![BLAD_PRZEPELNIENIA.into()],
+        },
+    }
+}
+
+fn wylicz_spr(p: &ParametryWyceny, sekcje: &[SekcjaDoWyceny]) -> W<Wycena> {
     let mut ostrzezenia = Vec::new();
+    let mut bledy = Vec::new();
     let mut wynik_sekcji = Vec::with_capacity(sekcje.len());
     let mut suma_meble: i64 = 0;
     let mut agd_wg_stawek: Vec<(i64, i64)> = Vec::new();
     let mut suma_agd: i64 = 0;
 
     for s in sekcje {
-        let stawka = s.stawka_vat.unwrap_or(p.stawka_vat);
+        // AGD bez stawki: 23% (nie stawka oferty – meble mogą mieć 8%).
+        let stawka = if s.agd {
+            s.stawka_vat.unwrap_or(23)
+        } else {
+            p.stawka_vat
+        };
         let czesci: Vec<WycenaCzesci> = s
             .czesci
             .iter()
@@ -237,16 +349,16 @@ pub fn wylicz(p: &ParametryWyceny, sekcje: &[SekcjaDoWyceny]) -> Wycena {
                     continue;
                 }
                 match poz.cena_gr {
-                    Some(c) => suma += razy_ilosc(c, poz.ilosc.unwrap_or(1.0)),
+                    Some(c) => suma = dodaj(suma, razy_ilosc_spr(c, poz.ilosc.unwrap_or(1.0))?)?,
                     None => brak = true,
                 }
             }
             if brak {
                 ostrzezenia.push(format!("{}: pozycje AGD bez ceny", etykieta(s)));
             }
-            suma_agd += suma;
+            suma_agd = dodaj(suma_agd, suma)?;
             match agd_wg_stawek.iter_mut().find(|(st, _)| *st == stawka) {
-                Some((_, k)) => *k += suma,
+                Some((_, k)) => *k = dodaj(*k, suma)?,
                 None => agd_wg_stawek.push((stawka, suma)),
             }
             wynik_sekcji.push(WycenaSekcji {
@@ -265,7 +377,10 @@ pub fn wylicz(p: &ParametryWyceny, sekcje: &[SekcjaDoWyceny]) -> Wycena {
         let (suma, brak) = match p.poziom {
             PoziomWyceny::Czesc => {
                 let brak = s.czesci.iter().any(|c| c.cena_gr.is_none());
-                let suma: i64 = s.czesci.iter().filter_map(|c| c.cena_gr).sum();
+                let mut suma: i64 = 0;
+                for c in s.czesci.iter().filter_map(|c| c.cena_gr) {
+                    suma = dodaj(suma, c)?;
+                }
                 (Some(suma), brak || s.czesci.is_empty())
             }
             PoziomWyceny::Sekcja => (Some(s.cena_gr.unwrap_or(0)), s.cena_gr.is_none()),
@@ -278,7 +393,7 @@ pub fn wylicz(p: &ParametryWyceny, sekcje: &[SekcjaDoWyceny]) -> Wycena {
             });
         }
         if let Some(k) = suma {
-            suma_meble += k;
+            suma_meble = dodaj(suma_meble, k)?;
         }
         wynik_sekcji.push(WycenaSekcji {
             sekcja_id: s.id,
@@ -299,32 +414,48 @@ pub fn wylicz(p: &ParametryWyceny, sekcje: &[SekcjaDoWyceny]) -> Wycena {
         }
     }
 
-    let rabat_calosc_gr = dziel_zaokraglij(suma_meble as i128 * p.rabat_calosc_bp as i128, 10_000);
-    let mut po_rabatach = suma_meble - p.rabat_termin_gr - rabat_calosc_gr;
+    let rabat_calosc_gr =
+        dziel_zaokraglij_spr(suma_meble as i128 * p.rabat_calosc_bp as i128, 10_000)?;
+    let mut po_rabatach = odejmij(odejmij(suma_meble, p.rabat_termin_gr)?, rabat_calosc_gr)?;
     if po_rabatach < 0 {
-        ostrzezenia.push("Rabaty przekraczają sumę za meble – przyjęto 0 zł".into());
+        bledy.push(format!(
+            "Rabaty ({}) są większe niż suma za meble ({}) – zmniejsz rabat albo popraw ceny; \
+             dokumentu dla klienta nie można utworzyć",
+            crate::formaty::kwota(dodaj(p.rabat_termin_gr, rabat_calosc_gr)?),
+            crate::formaty::kwota(suma_meble)
+        ));
         po_rabatach = 0;
     }
 
-    let meble = kwoty_vat(po_rabatach, p.stawka_vat, p.tryb_cen);
+    let meble = kwoty_vat_spr(po_rabatach, p.stawka_vat, p.tryb_cen)?;
     agd_wg_stawek.sort_by_key(|(s, _)| *s);
-    let agd: Vec<KwotyVat> = agd_wg_stawek
-        .into_iter()
-        .map(|(s, k)| kwoty_vat(k, s, p.tryb_cen))
-        .collect();
+    let mut agd: Vec<KwotyVat> = Vec::with_capacity(agd_wg_stawek.len());
+    for (s, k) in agd_wg_stawek {
+        agd.push(kwoty_vat_spr(k, s, p.tryb_cen)?);
+    }
 
-    let suma_netto = meble.netto_gr + agd.iter().map(|k| k.netto_gr).sum::<i64>();
-    let suma_vat = meble.vat_gr + agd.iter().map(|k| k.vat_gr).sum::<i64>();
-    let suma_brutto = meble.brutto_gr + agd.iter().map(|k| k.brutto_gr).sum::<i64>();
+    let (mut suma_netto, mut suma_vat, mut suma_brutto) =
+        (meble.netto_gr, meble.vat_gr, meble.brutto_gr);
+    for k in &agd {
+        suma_netto = dodaj(suma_netto, k.netto_gr)?;
+        suma_vat = dodaj(suma_vat, k.vat_gr)?;
+        suma_brutto = dodaj(suma_brutto, k.brutto_gr)?;
+    }
 
     let wewnetrzne = match p.koszt_wlasny_gr {
         Some(koszt) => {
-            let marza = meble.netto_gr - koszt;
+            let marza = odejmij(meble.netto_gr, koszt)?;
             DaneWewnetrzne {
                 koszt_wlasny_gr: Some(koszt),
                 marza_gr: Some(marza),
-                marza_bp: (meble.netto_gr != 0)
-                    .then(|| dziel_zaokraglij(marza as i128 * 10_000, meble.netto_gr as i128)),
+                marza_bp: if meble.netto_gr != 0 {
+                    Some(dziel_zaokraglij_spr(
+                        marza as i128 * 10_000,
+                        meble.netto_gr as i128,
+                    )?)
+                } else {
+                    None
+                },
             }
         }
         None => DaneWewnetrzne {
@@ -334,7 +465,7 @@ pub fn wylicz(p: &ParametryWyceny, sekcje: &[SekcjaDoWyceny]) -> Wycena {
         },
     };
 
-    Wycena {
+    Ok(Wycena {
         poziom: p.poziom,
         tryb_cen: p.tryb_cen,
         sekcje: wynik_sekcji,
@@ -351,7 +482,8 @@ pub fn wylicz(p: &ParametryWyceny, sekcje: &[SekcjaDoWyceny]) -> Wycena {
         suma_brutto_gr: suma_brutto,
         wewnetrzne,
         ostrzezenia,
-    }
+        bledy,
+    })
 }
 
 #[cfg(test)]
@@ -524,7 +656,45 @@ mod testy {
         let w = wylicz(&p, &[sekcja(1, Some(5_000), &[])]);
         assert_eq!(w.meble_po_rabatach_gr, 0);
         assert_eq!(w.suma_brutto_gr, 0);
-        assert_eq!(w.ostrzezenia.len(), 1);
+        assert!(w.ostrzezenia.is_empty());
+        assert_eq!(w.bledy.len(), 1, "rabat > suma blokuje dokument");
+        assert!(w.bledy[0].contains("większe niż suma"));
+    }
+
+    #[test]
+    fn przepelnienie_daje_blad_zamiast_paniki() {
+        let p = parametry(PoziomWyceny::Sekcja);
+        // dwie sekcje po 2^62 gr – suma nie mieści się w i64
+        let w = wylicz(
+            &p,
+            &[sekcja(1, Some(1 << 62), &[]), sekcja(2, Some(1 << 62), &[])],
+        );
+        assert_eq!(w.bledy, vec![BLAD_PRZEPELNIENIA.to_string()]);
+        assert_eq!(w.suma_brutto_gr, 0);
+        // AGD z ilością 1e30 – wcześniej panika
+        let w = wylicz(&p, &[agd(1, None, &[(Some(100), 1e30, "ustalone")])]);
+        assert_eq!(w.bledy, vec![BLAD_PRZEPELNIENIA.to_string()]);
+        // 10 zł × 1e17 – wcześniej po cichu błędna suma
+        let w = wylicz(&p, &[agd(1, None, &[(Some(1_000), 1e17, "ustalone")])]);
+        assert_eq!(w.bledy, vec![BLAD_PRZEPELNIENIA.to_string()]);
+        // na granicy limitów API (1 mld zł × 1 mln szt.) liczy się poprawnie
+        let w = wylicz(
+            &p,
+            &[agd(
+                1,
+                None,
+                &[(
+                    Some(crate::limity::MAKS_KWOTA_GR),
+                    crate::limity::MAKS_ILOSC,
+                    "ustalone",
+                )],
+            )],
+        );
+        assert!(w.bledy.is_empty());
+        assert_eq!(w.suma_agd_gr, crate::limity::MAKS_KWOTA_GR * 1_000_000);
+        // NaN / nieskończoność
+        assert_eq!(razy_ilosc_spr(100, f64::INFINITY), Err(Przepelnienie));
+        assert_eq!(razy_ilosc_spr(100, f64::NAN), Err(Przepelnienie));
     }
 
     #[test]
@@ -565,7 +735,7 @@ mod testy {
     }
 
     #[test]
-    fn agd_bez_stawki_bierze_stawke_oferty_i_tryb_netto() {
+    fn agd_bez_stawki_ma_23_procent_i_tryb_netto() {
         let mut p = parametry(PoziomWyceny::Sekcja);
         p.tryb_cen = TrybCen::Netto;
         p.stawka_vat = 8;
@@ -581,9 +751,10 @@ mod testy {
             ],
         );
         assert_eq!(w.meble.brutto_gr, 108_000);
-        assert_eq!(w.agd[0].stawka, 8);
-        assert_eq!(w.agd[0].brutto_gr, 10_800);
-        assert_eq!(w.suma_brutto_gr, 118_800);
+        // AGD bez stawki: 23%, nie stawka oferty (8%)
+        assert_eq!(w.agd[0].stawka, 23);
+        assert_eq!(w.agd[0].brutto_gr, 12_300);
+        assert_eq!(w.suma_brutto_gr, 120_300);
         assert!(w.sekcje[1].brak_ceny);
     }
 

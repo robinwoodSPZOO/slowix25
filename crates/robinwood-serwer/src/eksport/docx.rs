@@ -141,12 +141,14 @@ pub fn renderuj(dok: &DokumentOferty) -> Wynik<Vec<u8>> {
                 .left(1_020)
                 .right(1_020),
         )
+        // Calibri jest na każdym Windows z Office (i w Word Online); LibreOffice podstawia
+        // metrycznie zgodne Carlito. Inter nie jest osadzany w DOCX, więc nie może być domyślny.
         .default_fonts(
             RunFonts::new()
-                .ascii("Inter")
-                .hi_ansi("Inter")
-                .cs("Inter")
-                .east_asia("Inter"),
+                .ascii("Calibri")
+                .hi_ansi("Calibri")
+                .cs("Arial")
+                .east_asia("Arial"),
         )
         .default_size(20)
         .default_line_spacing(LineSpacing::new().after(60));

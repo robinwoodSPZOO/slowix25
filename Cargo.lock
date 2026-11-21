@@ -4038,6 +4038,7 @@ dependencies = [
  "genpdf",
  "http-body-util",
  "image 0.23.14",
+ "lopdf",
  "mdns-sd",
  "rand 0.8.8",
  "serde",

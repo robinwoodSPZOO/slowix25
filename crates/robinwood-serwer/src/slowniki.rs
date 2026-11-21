@@ -60,3 +60,13 @@ pub async fn kategorie_materialow(pula: &SqlitePool) -> Wynik<Vec<KategoriaMater
     .fetch_all(pula)
     .await?)
 }
+
+/// Aktywne pozycje wszystkich słowników jednym zapytaniem.
+pub async fn wszystkie_pozycje(pula: &SqlitePool) -> Wynik<Vec<PozycjaSlownika>> {
+    Ok(sqlx::query_as(
+        "SELECT id, slownik_kod, wartosc, producent, dekor, kategoria_materialu_id, kolejnosc, podgrupa \
+         FROM pozycje_slownika WHERE aktywna = 1 ORDER BY slownik_kod, kolejnosc, wartosc",
+    )
+    .fetch_all(pula)
+    .await?)
+}

@@ -63,7 +63,21 @@ pub async fn zapisz(pula: &SqlitePool, d: DaneFirmy) -> Wynik<DaneFirmy> {
             "ważność oferty: od 0 do 365 dni".into(),
         ));
     }
-    let mut tx = pula.begin().await?;
+    for (n, v, m) in [
+        ("nazwa firmy", &d.firma_nazwa, crate::limity::MAKS_NAZWA),
+        ("adres firmy", &d.firma_adres, 1000),
+        ("NIP", &d.firma_nip, 40),
+        ("telefon", &d.firma_telefon, 100),
+        ("e-mail", &d.firma_email, crate::limity::MAKS_NAZWA),
+        (
+            "termin realizacji",
+            &d.oferta_termin_realizacji,
+            crate::limity::MAKS_NAZWA,
+        ),
+    ] {
+        crate::limity::tekst(n, Some(v), m)?;
+    }
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let wartosci = [
         d.firma_nazwa.trim().to_string(),
         d.firma_adres.trim().to_string(),

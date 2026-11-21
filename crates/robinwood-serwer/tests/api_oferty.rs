@@ -240,11 +240,9 @@ async fn pelny_scenariusz_oferty() {
         Some(json!({ "nazwa": "Szafa w przedpokoju", "cena_gr": 1_080_000 })),
     )
     .await;
-    let mut wersja =
-        ok(&app, "GET", &format!("/api/v1/wersje-oferty/{v1}"), None).await["wersja"].clone();
-    wersja["rabat_termin_gr"] = json!(20_000);
-    wersja["rabat_calosc_bp"] = json!(500);
-    wersja["koszt_wlasny_gr"] = json!(2_500_000);
+    // zmiana częściowa: tylko zmienione pola
+    let wersja =
+        json!({ "rabat_termin_gr": 20_000, "rabat_calosc_bp": 500, "koszt_wlasny_gr": 2_500_000 });
     let p = ok(
         &app,
         "PUT",
@@ -301,7 +299,20 @@ async fn pelny_scenariusz_oferty() {
         )
         .await
         .unwrap();
+    // klucz w adresie działa tylko dla WebSocket – obrazki pobiera się z nagłówkiem
+    assert_eq!(odp.status(), StatusCode::UNAUTHORIZED);
+    let odp = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/v1/pliki/{plik}"))
+                .header(header::AUTHORIZATION, format!("Bearer {KLUCZ}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(odp.status(), StatusCode::OK);
+    assert_eq!(odp.headers()["x-content-type-options"], "nosniff");
     assert_eq!(odp.headers()[header::CONTENT_TYPE], "image/png");
     let odp = app
         .clone()

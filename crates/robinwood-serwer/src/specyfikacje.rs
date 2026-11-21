@@ -9,9 +9,12 @@
 //! materiału korpusu).
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sqlx::{FromRow, SqliteConnection, SqlitePool};
 
 use crate::bledy::{BladApi, Wynik};
+use crate::limity::{self, MAKS_NAZWA, MAKS_TEKST};
+use crate::zmiany::ZmianaCzesciowa;
 
 pub const PODGRUPY: &[&str] = &["glowna", "wyposazenie", "frezowanie"];
 pub const STATUSY_WIERSZA: &[&str] = &[
@@ -48,6 +51,9 @@ pub struct Wiersz {
     pub cena_gr: Option<i64>,
     pub material_z_korpusu: bool,
     pub kolejnosc: i64,
+    /// Licznik zmian rekordu (rośnie przy każdym zapisie).
+    pub wersja: i64,
+    pub zmieniono: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow, PartialEq)]
@@ -58,6 +64,8 @@ pub struct Czesc {
     pub nazwa: String,
     pub cena_gr: Option<i64>,
     pub kolejnosc: i64,
+    pub wersja: i64,
+    pub zmieniono: Option<String>,
     #[sqlx(skip)]
     pub wiersze: Vec<Wiersz>,
 }
@@ -74,6 +82,8 @@ pub struct Sekcja {
     pub cena_gr: Option<i64>,
     pub stawka_vat: Option<i64>,
     pub kolejnosc: i64,
+    pub wersja: i64,
+    pub zmieniono: Option<String>,
     #[sqlx(skip)]
     pub czesci: Vec<Czesc>,
 }
@@ -91,13 +101,20 @@ pub struct Zdjecie {
     pub typ_mime: Option<String>,
 }
 
-/// Do czego należy specyfikacja (np. wersja oferty) – decyduje o edytowalności.
+/// Do czego należy specyfikacja (wersja oferty, umowa, aneks) – decyduje o edytowalności
+/// i o tym, które zasoby odświeżyć na innych stanowiskach po zmianie.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Wlasciciel {
+    /// `wersja_oferty`, `umowa`, `aneks`.
     pub rodzaj: String,
     pub id: i64,
+    /// Oferta (dla wersji oferty) albo umowa (dla umowy i aneksu).
     pub nadrzedny_id: i64,
     pub opis: String,
+    /// Zasób zdarzenia WebSocket rozsyłanego po zmianie specyfikacji (`oferty`, `umowy`).
+    pub zasob: &'static str,
+    /// Dlaczego specyfikacja jest tylko do odczytu (`None` = można zmieniać).
+    pub powod_blokady: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -107,7 +124,8 @@ pub struct Specyfikacja {
     pub sekcje: Vec<Sekcja>,
     pub zdjecia: Vec<Zdjecie>,
     pub wlasciciel: Option<Wlasciciel>,
-    /// Starsza wersja oferty – tylko do odczytu (zmiany przez nową wersję).
+    /// Tylko do odczytu (np. starsza albo wysłana wersja oferty, podpisana umowa);
+    /// powód w `wlasciciel.powod_blokady`.
     pub tylko_do_odczytu: bool,
 }
 
@@ -121,7 +139,7 @@ pub struct WynikZmiany {
 // Dane wejściowe
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct DaneSekcji {
     pub nazwa: String,
@@ -133,7 +151,7 @@ pub struct DaneSekcji {
     pub po_sekcji_id: Option<i64>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct DaneCzesci {
     pub nazwa: String,
@@ -141,7 +159,7 @@ pub struct DaneCzesci {
     pub po_czesci_id: Option<i64>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct DaneWiersza {
     pub podgrupa: Option<String>,
@@ -190,12 +208,7 @@ fn sprawdz_vat(v: Option<i64>) -> Wynik<()> {
 }
 
 fn sprawdz_cene(c: Option<i64>) -> Wynik<()> {
-    match c {
-        Some(x) if x < 0 => Err(BladApi::NieprawidloweDane(
-            "cena nie może być ujemna".into(),
-        )),
-        _ => Ok(()),
-    }
+    limity::kwota("cena", c)
 }
 
 impl DaneSekcji {
@@ -212,8 +225,14 @@ impl DaneSekcji {
                 "nieznany typ sekcji „{typ}”"
             )));
         }
+        // AGD: domyślnie 23% (sprzęt kupowany dla klienta), także przy zmianie typu sekcji.
+        if typ == "agd" && self.stawka_vat.is_none() {
+            self.stawka_vat = Some(23);
+        }
         self.typ = Some(typ);
         self.wariant = oczysc_tekst(self.wariant);
+        limity::tekst("nazwa sekcji", Some(&self.nazwa), MAKS_NAZWA)?;
+        limity::tekst("wariant", self.wariant.as_deref(), MAKS_NAZWA)?;
         sprawdz_vat(self.stawka_vat)?;
         sprawdz_cene(self.cena_gr)?;
         Ok(self)
@@ -228,6 +247,7 @@ impl DaneCzesci {
                 "nazwa części jest wymagana".into(),
             ));
         }
+        limity::tekst("nazwa części", Some(&self.nazwa), MAKS_NAZWA)?;
         sprawdz_cene(self.cena_gr)?;
         Ok(self)
     }
@@ -255,13 +275,18 @@ impl DaneWiersza {
         self.opis = oczysc_tekst(self.opis);
         self.jednostka = oczysc_tekst(self.jednostka);
         self.termin_potwierdzenia = oczysc_tekst(self.termin_potwierdzenia);
-        if let Some(i) = self.ilosc {
-            if !i.is_finite() || i < 0.0 {
+        if let Some(t) = &self.termin_potwierdzenia {
+            if chrono::NaiveDate::parse_from_str(t, "%Y-%m-%d").is_err() {
                 return Err(BladApi::NieprawidloweDane(
-                    "ilość musi być liczbą nieujemną".into(),
+                    "termin potwierdzenia: oczekiwano daty RRRR-MM-DD".into(),
                 ));
             }
         }
+        limity::tekst("rodzaj", self.rodzaj.as_deref(), MAKS_NAZWA)?;
+        limity::tekst("materiał", self.material.as_deref(), MAKS_TEKST)?;
+        limity::tekst("opis", self.opis.as_deref(), MAKS_TEKST)?;
+        limity::tekst("jednostka", self.jednostka.as_deref(), 20)?;
+        limity::ilosc(self.ilosc)?;
         sprawdz_cene(self.cena_gr)?;
         Ok(self)
     }
@@ -288,97 +313,200 @@ pub fn dziedziczy_material_korpusu(rodzaj: Option<&str>) -> bool {
 // ---------------------------------------------------------------------------
 
 const KOLUMNY_SEKCJI: &str =
-    "s.id, s.specyfikacja_id, s.ident, s.numer, s.nazwa, s.typ, s.wariant, s.cena_gr, s.stawka_vat, s.kolejnosc";
-const KOLUMNY_CZESCI: &str = "c.id, c.sekcja_id, c.ident, c.nazwa, c.cena_gr, c.kolejnosc";
+    "s.id, s.specyfikacja_id, s.ident, s.numer, s.nazwa, s.typ, s.wariant, s.cena_gr, \
+    s.stawka_vat, s.kolejnosc, s.wersja, s.zmieniono";
+const KOLUMNY_CZESCI: &str =
+    "c.id, c.sekcja_id, c.ident, c.nazwa, c.cena_gr, c.kolejnosc, c.wersja, c.zmieniono";
 const KOLUMNY_WIERSZA: &str = "w.id, w.czesc_id, w.ident, w.podgrupa, w.rodzaj, w.material, w.opis, w.ilosc, \
     w.jednostka, w.status, w.termin_potwierdzenia, w.kategoria_materialu_id, w.pozycja_slownika_id, \
-    w.cena_gr, w.material_z_korpusu, w.kolejnosc";
+    w.cena_gr, w.material_z_korpusu, w.kolejnosc, w.wersja, w.zmieniono";
+const TERAZ: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
-async fn wlasciciel(db: &mut SqliteConnection, spec_id: i64) -> Wynik<(Option<Wlasciciel>, bool)> {
-    let wiersz: Option<(i64, i64, i64, i64, String)> = sqlx::query_as(
+/// Właściciel specyfikacji i powód blokady zapisu.
+///
+/// Rozpoznawane rodzaje (kolejne moduły dopisują tu swoją gałąź):
+/// * `wersja_oferty` – tylko do odczytu, gdy to nie najnowsza wersja albo oferta wyszła ze
+///   szkicu (wysłana, zaakceptowana, odrzucona, wygasła – zmiany przez nową wersję);
+/// * `umowa` – tylko do odczytu, gdy umowa nie jest szkicem (zmiany przez aneks);
+/// * `aneks` – tylko do odczytu, gdy aneks nie jest szkicem.
+pub async fn wlasciciel(db: &mut SqliteConnection, spec_id: i64) -> Wynik<Option<Wlasciciel>> {
+    let oferta: Option<(i64, i64, i64, i64, String, String)> = sqlx::query_as(
         "SELECT w.id, w.oferta_id, w.nr_wersji, \
-           (SELECT MAX(nr_wersji) FROM wersje_oferty WHERE oferta_id = w.oferta_id), o.numer \
+           (SELECT MAX(nr_wersji) FROM wersje_oferty WHERE oferta_id = w.oferta_id), o.numer, o.status \
          FROM wersje_oferty w JOIN oferty o ON o.id = w.oferta_id WHERE w.specyfikacja_id = ?1",
     )
     .bind(spec_id)
     .fetch_optional(&mut *db)
     .await?;
-    Ok(match wiersz {
-        Some((wid, oid, nr, max, numer)) => (
-            Some(Wlasciciel {
-                rodzaj: "wersja_oferty".into(),
-                id: wid,
-                nadrzedny_id: oid,
-                opis: format!("Oferta {numer} v{nr}"),
+    if let Some((wid, oid, nr, max, numer, status)) = oferta {
+        let powod = if nr < max {
+            Some(
+                "starsza wersja oferty jest tylko do odczytu – zmiany wprowadź w najnowszej wersji"
+                    .to_string(),
+            )
+        } else if status != "szkic" {
+            Some(format!(
+                "oferta ma status „{}” – wersja jest zamrożona; utwórz nową wersję, aby wprowadzić zmiany",
+                status_oferty(&status)
+            ))
+        } else {
+            None
+        };
+        return Ok(Some(Wlasciciel {
+            rodzaj: "wersja_oferty".into(),
+            id: wid,
+            nadrzedny_id: oid,
+            opis: format!("Oferta {numer} v{nr}"),
+            zasob: "oferty",
+            powod_blokady: powod,
+        }));
+    }
+    let umowa: Option<(i64, String, String)> =
+        sqlx::query_as("SELECT id, numer, status FROM umowy WHERE specyfikacja_id = ?1")
+            .bind(spec_id)
+            .fetch_optional(&mut *db)
+            .await?;
+    if let Some((uid, numer, status)) = umowa {
+        return Ok(Some(Wlasciciel {
+            rodzaj: "umowa".into(),
+            id: uid,
+            nadrzedny_id: uid,
+            opis: format!("Umowa {numer}"),
+            zasob: "umowy",
+            powod_blokady: (status != "szkic").then(|| {
+                format!("umowa ma status „{status}” – specyfikacja tylko do odczytu (zmiany przez aneks)")
             }),
-            nr < max,
-        ),
-        None => (None, false),
-    })
+        }));
+    }
+    let aneks: Option<(i64, i64, i64, String, String)> = sqlx::query_as(
+        "SELECT a.id, a.umowa_id, a.nr, a.status, u.numer FROM aneksy a JOIN umowy u ON u.id = a.umowa_id \
+         WHERE a.specyfikacja_id = ?1",
+    )
+    .bind(spec_id)
+    .fetch_optional(&mut *db)
+    .await?;
+    if let Some((aid, uid, nr, status, numer)) = aneks {
+        return Ok(Some(Wlasciciel {
+            rodzaj: "aneks".into(),
+            id: aid,
+            nadrzedny_id: uid,
+            opis: format!("Aneks nr {nr} do umowy {numer}"),
+            zasob: "umowy",
+            powod_blokady: (status != "szkic")
+                .then(|| format!("aneks ma status „{status}” – specyfikacja tylko do odczytu")),
+        }));
+    }
+    Ok(None)
+}
+
+fn status_oferty(s: &str) -> &str {
+    match s {
+        "wyslana" => "wysłana",
+        "zaakceptowana" => "zaakceptowana",
+        "odrzucona" => "odrzucona",
+        "wygasla" => "wygasła",
+        inny => inny,
+    }
 }
 
 pub async fn pobierz_w(db: &mut SqliteConnection, id: i64) -> Wynik<Specyfikacja> {
-    let zrodlo: Option<(Option<i64>,)> =
-        sqlx::query_as("SELECT zrodlo_id FROM specyfikacje WHERE id = ?1")
-            .bind(id)
-            .fetch_optional(&mut *db)
-            .await?;
-    let Some((zrodlo_id,)) = zrodlo else {
-        return Err(BladApi::NieZnaleziono(format!("specyfikacja {id}")));
-    };
-    let mut sekcje: Vec<Sekcja> = sqlx::query_as(&format!(
-        "SELECT {KOLUMNY_SEKCJI} FROM sekcje_specyfikacji s WHERE s.specyfikacja_id = ?1 \
-         ORDER BY s.kolejnosc, s.id"
-    ))
-    .bind(id)
+    let mut drzewa = drzewa_w(db, &[id]).await?;
+    let mut spec = drzewa
+        .remove(&id)
+        .ok_or_else(|| BladApi::NieZnaleziono(format!("specyfikacja {id}")))?;
+    spec.wlasciciel = wlasciciel(db, id).await?;
+    spec.tylko_do_odczytu = spec
+        .wlasciciel
+        .as_ref()
+        .is_some_and(|w| w.powod_blokady.is_some());
+    Ok(spec)
+}
+
+/// Drzewa wielu specyfikacji naraz (stała liczba zapytań – np. lista ofert z sumami).
+/// Bez właściciela (`wlasciciel: None`).
+pub async fn drzewa_w(
+    db: &mut SqliteConnection,
+    ids: &[i64],
+) -> Wynik<std::collections::HashMap<i64, Specyfikacja>> {
+    use std::collections::HashMap;
+    let lista = serde_json::to_string(ids).unwrap_or_else(|_| "[]".into());
+    let naglowki: Vec<(i64, Option<i64>)> = sqlx::query_as(
+        "SELECT id, zrodlo_id FROM specyfikacje WHERE id IN (SELECT value FROM json_each(?1))",
+    )
+    .bind(&lista)
     .fetch_all(&mut *db)
     .await?;
-    let mut czesci: Vec<Czesc> = sqlx::query_as(&format!(
-        "SELECT {KOLUMNY_CZESCI} FROM czesci_specyfikacji c \
-         JOIN sekcje_specyfikacji s ON s.id = c.sekcja_id WHERE s.specyfikacja_id = ?1 \
-         ORDER BY c.kolejnosc, c.id"
+    let sekcje: Vec<Sekcja> = sqlx::query_as(&format!(
+        "SELECT {KOLUMNY_SEKCJI} FROM sekcje_specyfikacji s \
+         WHERE s.specyfikacja_id IN (SELECT value FROM json_each(?1)) ORDER BY s.kolejnosc, s.id"
     ))
-    .bind(id)
+    .bind(&lista)
+    .fetch_all(&mut *db)
+    .await?;
+    let czesci: Vec<Czesc> = sqlx::query_as(&format!(
+        "SELECT {KOLUMNY_CZESCI} FROM czesci_specyfikacji c \
+         JOIN sekcje_specyfikacji s ON s.id = c.sekcja_id \
+         WHERE s.specyfikacja_id IN (SELECT value FROM json_each(?1)) ORDER BY c.kolejnosc, c.id"
+    ))
+    .bind(&lista)
     .fetch_all(&mut *db)
     .await?;
     let wiersze: Vec<Wiersz> = sqlx::query_as(&format!(
         "SELECT {KOLUMNY_WIERSZA} FROM wiersze_specyfikacji w \
          JOIN czesci_specyfikacji c ON c.id = w.czesc_id \
-         JOIN sekcje_specyfikacji s ON s.id = c.sekcja_id WHERE s.specyfikacja_id = ?1 \
-         ORDER BY w.kolejnosc, w.id"
+         JOIN sekcje_specyfikacji s ON s.id = c.sekcja_id \
+         WHERE s.specyfikacja_id IN (SELECT value FROM json_each(?1)) ORDER BY w.kolejnosc, w.id"
     ))
-    .bind(id)
+    .bind(&lista)
     .fetch_all(&mut *db)
     .await?;
     let zdjecia: Vec<Zdjecie> = sqlx::query_as(
         "SELECT z.id, z.specyfikacja_id, z.sekcja_id, z.czesc_id, z.plik_id, z.podpis, z.kolejnosc, \
            p.nazwa, p.typ_mime \
          FROM zdjecia_specyfikacji z JOIN pliki p ON p.id = z.plik_id \
-         WHERE z.specyfikacja_id = ?1 ORDER BY z.kolejnosc, z.id",
+         WHERE z.specyfikacja_id IN (SELECT value FROM json_each(?1)) ORDER BY z.kolejnosc, z.id",
     )
-    .bind(id)
+    .bind(&lista)
     .fetch_all(&mut *db)
     .await?;
 
+    let mut wiersze_czesci: HashMap<i64, Vec<Wiersz>> = HashMap::new();
     for w in wiersze {
-        if let Some(c) = czesci.iter_mut().find(|c| c.id == w.czesc_id) {
-            c.wiersze.push(w);
+        wiersze_czesci.entry(w.czesc_id).or_default().push(w);
+    }
+    let mut czesci_sekcji: HashMap<i64, Vec<Czesc>> = HashMap::new();
+    for mut c in czesci {
+        c.wiersze = wiersze_czesci.remove(&c.id).unwrap_or_default();
+        czesci_sekcji.entry(c.sekcja_id).or_default().push(c);
+    }
+    let mut wynik: HashMap<i64, Specyfikacja> = naglowki
+        .into_iter()
+        .map(|(id, zrodlo_id)| {
+            (
+                id,
+                Specyfikacja {
+                    id,
+                    zrodlo_id,
+                    sekcje: vec![],
+                    zdjecia: vec![],
+                    wlasciciel: None,
+                    tylko_do_odczytu: false,
+                },
+            )
+        })
+        .collect();
+    for mut s in sekcje {
+        s.czesci = czesci_sekcji.remove(&s.id).unwrap_or_default();
+        if let Some(sp) = wynik.get_mut(&s.specyfikacja_id) {
+            sp.sekcje.push(s);
         }
     }
-    for c in czesci {
-        if let Some(s) = sekcje.iter_mut().find(|s| s.id == c.sekcja_id) {
-            s.czesci.push(c);
+    for z in zdjecia {
+        if let Some(sp) = wynik.get_mut(&z.specyfikacja_id) {
+            sp.zdjecia.push(z);
         }
     }
-    let (wlasciciel, tylko_do_odczytu) = wlasciciel(db, id).await?;
-    Ok(Specyfikacja {
-        id,
-        zrodlo_id,
-        sekcje,
-        zdjecia,
-        wlasciciel,
-        tylko_do_odczytu,
-    })
+    Ok(wynik)
 }
 
 pub async fn pobierz(pula: &SqlitePool, id: i64) -> Wynik<Specyfikacja> {
@@ -427,7 +555,7 @@ async fn pobierz_wiersz(db: &mut SqliteConnection, id: i64) -> Wynik<Wiersz> {
     .ok_or_else(|| BladApi::NieZnaleziono(format!("wiersz {id}")))
 }
 
-/// Specyfikacja istnieje i można ją zmieniać (starsze wersje oferty są zamrożone).
+/// Specyfikacja istnieje i można ją zmieniać (patrz [`wlasciciel`]).
 pub async fn sprawdz_zapis(db: &mut SqliteConnection, spec_id: i64) -> Wynik<()> {
     let istnieje: Option<i64> = sqlx::query_scalar("SELECT id FROM specyfikacje WHERE id = ?1")
         .bind(spec_id)
@@ -436,12 +564,8 @@ pub async fn sprawdz_zapis(db: &mut SqliteConnection, spec_id: i64) -> Wynik<()>
     if istnieje.is_none() {
         return Err(BladApi::NieZnaleziono(format!("specyfikacja {spec_id}")));
     }
-    let (_, tylko_odczyt) = wlasciciel(db, spec_id).await?;
-    if tylko_odczyt {
-        return Err(BladApi::NieprawidloweDane(
-            "starsza wersja oferty jest tylko do odczytu – zmiany wprowadź w najnowszej wersji"
-                .into(),
-        ));
+    if let Some(powod) = wlasciciel(db, spec_id).await?.and_then(|w| w.powod_blokady) {
+        return Err(BladApi::NieprawidloweDane(powod));
     }
     Ok(())
 }
@@ -536,7 +660,7 @@ async fn wynik(db: &mut SqliteConnection, id: i64, spec_id: i64) -> Wynik<WynikZ
 
 pub async fn dodaj_sekcje(pula: &SqlitePool, spec_id: i64, dane: DaneSekcji) -> Wynik<WynikZmiany> {
     let d = dane.oczysc()?;
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     sprawdz_zapis(&mut tx, spec_id).await?;
     let id = wstaw_sekcje(&mut tx, spec_id, &d, None).await?;
     przenumeruj(&mut tx, spec_id).await?;
@@ -577,14 +701,146 @@ async fn wstaw_sekcje(
     .last_insert_rowid())
 }
 
+/// Pola sekcji zmieniane przez `PUT /sekcje/{id}` (zmiana częściowa).
+pub const POLA_SEKCJI: &[&str] = &["nazwa", "typ", "wariant", "cena_gr", "stawka_vat"];
+/// Pola części zmieniane przez `PUT /czesci/{id}`.
+pub const POLA_CZESCI: &[&str] = &["nazwa", "cena_gr"];
+/// Pola wiersza zmieniane przez `PUT /wiersze/{id}`.
+pub const POLA_WIERSZA: &[&str] = &[
+    "podgrupa",
+    "rodzaj",
+    "material",
+    "opis",
+    "ilosc",
+    "jednostka",
+    "status",
+    "termin_potwierdzenia",
+    "kategoria_materialu_id",
+    "pozycja_slownika_id",
+    "cena_gr",
+    "material_z_korpusu",
+];
+
+/// Nazwa pola do komunikatu o konflikcie.
+pub fn nazwa_pola(p: &str) -> String {
+    match p {
+        "rodzaj" => "Rodzaj",
+        "material" => "Materiał",
+        "opis" => "Opis",
+        "ilosc" => "Ilość",
+        "jednostka" => "j.m.",
+        "status" => "Status",
+        "cena_gr" => "Cena",
+        "nazwa" => "Nazwa",
+        "typ" => "Typ",
+        "wariant" => "Wariant",
+        "stawka_vat" => "Stawka VAT",
+        "podgrupa" => "Podgrupa",
+        "termin_potwierdzenia" => "Termin potwierdzenia",
+        inne => inne,
+    }
+    .to_string()
+}
+
+async fn pobierz_sekcje(db: &mut SqliteConnection, id: i64) -> Wynik<Sekcja> {
+    sqlx::query_as(&format!(
+        "SELECT {KOLUMNY_SEKCJI} FROM sekcje_specyfikacji s WHERE s.id = ?1"
+    ))
+    .bind(id)
+    .fetch_optional(&mut *db)
+    .await?
+    .ok_or_else(|| BladApi::NieZnaleziono(format!("sekcja {id}")))
+}
+
+async fn pobierz_czesc(db: &mut SqliteConnection, id: i64) -> Wynik<Czesc> {
+    sqlx::query_as(&format!(
+        "SELECT {KOLUMNY_CZESCI} FROM czesci_specyfikacji c WHERE c.id = ?1"
+    ))
+    .bind(id)
+    .fetch_optional(&mut *db)
+    .await?
+    .ok_or_else(|| BladApi::NieZnaleziono(format!("część {id}")))
+}
+
+fn dane_sekcji(s: &Sekcja) -> DaneSekcji {
+    DaneSekcji {
+        nazwa: s.nazwa.clone(),
+        typ: Some(s.typ.clone()),
+        wariant: s.wariant.clone(),
+        cena_gr: s.cena_gr,
+        stawka_vat: s.stawka_vat,
+        po_sekcji_id: None,
+    }
+}
+
+fn dane_czesci(c: &Czesc) -> DaneCzesci {
+    DaneCzesci {
+        nazwa: c.nazwa.clone(),
+        cena_gr: c.cena_gr,
+        po_czesci_id: None,
+    }
+}
+
+/// Dane wiersza do zmiany częściowej (`material_z_korpusu: None` = ustal automatycznie).
+pub fn dane_wiersza(w: &Wiersz) -> DaneWiersza {
+    DaneWiersza {
+        podgrupa: Some(w.podgrupa.clone()),
+        rodzaj: w.rodzaj.clone(),
+        material: w.material.clone(),
+        opis: w.opis.clone(),
+        ilosc: w.ilosc,
+        jednostka: w.jednostka.clone(),
+        status: Some(w.status.clone()),
+        termin_potwierdzenia: w.termin_potwierdzenia.clone(),
+        kategoria_materialu_id: w.kategoria_materialu_id,
+        pozycja_slownika_id: w.pozycja_slownika_id,
+        cena_gr: w.cena_gr,
+        material_z_korpusu: None,
+        po_wierszu_id: None,
+    }
+}
+
+fn do_json<T: Serialize>(t: &T) -> Value {
+    serde_json::to_value(t).unwrap_or(Value::Null)
+}
+
+/// Zmiana częściowa sekcji (`PUT /sekcje/{id}`) z wykrywaniem konfliktów pól.
+pub async fn zmien_sekcje_czesciowo(
+    pula: &SqlitePool,
+    id: i64,
+    z: ZmianaCzesciowa,
+) -> Wynik<WynikZmiany> {
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
+    let stara = pobierz_sekcje(&mut tx, id).await?;
+    sprawdz_zapis(&mut tx, stara.specyfikacja_id).await?;
+    let baza = dane_sekcji(&stara);
+    z.sprawdz(&do_json(&baza), do_json(&stara), &nazwa_pola)?;
+    let d = z.zastosuj(&baza)?.oczysc()?;
+    let w = zapisz_sekcje_w(&mut tx, id, stara.specyfikacja_id, &d).await?;
+    tx.commit().await?;
+    Ok(w)
+}
+
 pub async fn zmien_sekcje(pula: &SqlitePool, id: i64, dane: DaneSekcji) -> Wynik<WynikZmiany> {
     let d = dane.oczysc()?;
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let spec_id = spec_sekcji(&mut tx, id).await?;
     sprawdz_zapis(&mut tx, spec_id).await?;
-    sqlx::query(
-        "UPDATE sekcje_specyfikacji SET nazwa = ?1, typ = ?2, wariant = ?3, cena_gr = ?4, stawka_vat = ?5 WHERE id = ?6",
-    )
+    let w = zapisz_sekcje_w(&mut tx, id, spec_id, &d).await?;
+    tx.commit().await?;
+    Ok(w)
+}
+
+async fn zapisz_sekcje_w(
+    tx: &mut SqliteConnection,
+    id: i64,
+    spec_id: i64,
+    d: &DaneSekcji,
+) -> Wynik<WynikZmiany> {
+    sqlx::query(&format!(
+        "UPDATE sekcje_specyfikacji SET nazwa = ?1, typ = ?2, wariant = ?3, cena_gr = ?4, stawka_vat = ?5, \
+           wersja = wersja + 1, zmieniono = {TERAZ} WHERE id = ?6"
+    ))
     .bind(&d.nazwa)
     .bind(d.typ.as_deref().unwrap_or("meble"))
     .bind(&d.wariant)
@@ -593,31 +849,79 @@ pub async fn zmien_sekcje(pula: &SqlitePool, id: i64, dane: DaneSekcji) -> Wynik
     .bind(id)
     .execute(&mut *tx)
     .await?;
-    przenumeruj(&mut tx, spec_id).await?;
-    dziennik(&mut tx, "sekcje_specyfikacji", id, "zmiana").await?;
-    let w = wynik(&mut tx, id, spec_id).await?;
-    tx.commit().await?;
-    Ok(w)
+    przenumeruj(tx, spec_id).await?;
+    dziennik(tx, "sekcje_specyfikacji", id, "zmiana").await?;
+    wynik(tx, id, spec_id).await
 }
 
 pub async fn usun_sekcje(pula: &SqlitePool, id: i64) -> Wynik<WynikZmiany> {
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let spec_id = spec_sekcji(&mut tx, id).await?;
     sprawdz_zapis(&mut tx, spec_id).await?;
+    let do_potw: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM wiersze_specyfikacji w JOIN czesci_specyfikacji c ON c.id = w.czesc_id \
+         WHERE c.sekcja_id = ?1 AND w.status = 'do_potwierdzenia'",
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
     sqlx::query("DELETE FROM sekcje_specyfikacji WHERE id = ?1")
         .bind(id)
         .execute(&mut *tx)
         .await?;
     przenumeruj(&mut tx, spec_id).await?;
     dziennik(&mut tx, "sekcje_specyfikacji", id, "usuniecie").await?;
+    if do_potw > 0 {
+        po_zmianie_statusu_wiersza(&mut tx, spec_id).await?;
+    }
     let w = wynik(&mut tx, id, spec_id).await?;
     tx.commit().await?;
     Ok(w)
 }
 
+/// Lista identyfikatorów bez powtórzeń, zawierająca wszystkie `obecne`; zwraca dodatkowe
+/// (spoza `obecne` – przenoszone z innego rodzica).
+fn sprawdz_liste(ids: &[i64], obecne: &[i64], co: &str) -> Wynik<Vec<i64>> {
+    let mut widziane = std::collections::HashSet::new();
+    for id in ids {
+        if !widziane.insert(*id) {
+            return Err(BladApi::NieprawidloweDane(format!(
+                "kolejność: {co} {id} występuje na liście więcej niż raz"
+            )));
+        }
+    }
+    let brak: Vec<String> = obecne
+        .iter()
+        .filter(|id| !widziane.contains(id))
+        .map(i64::to_string)
+        .collect();
+    if !brak.is_empty() {
+        return Err(BladApi::NieprawidloweDane(format!(
+            "kolejność: lista musi zawierać wszystkie elementy – brakuje: {}",
+            brak.join(", ")
+        )));
+    }
+    Ok(ids
+        .iter()
+        .copied()
+        .filter(|i| !obecne.contains(i))
+        .collect())
+}
+
 pub async fn kolejnosc_sekcji(pula: &SqlitePool, spec_id: i64, k: Kolejnosc) -> Wynik<WynikZmiany> {
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     sprawdz_zapis(&mut tx, spec_id).await?;
+    let obecne: Vec<i64> =
+        sqlx::query_scalar("SELECT id FROM sekcje_specyfikacji WHERE specyfikacja_id = ?1")
+            .bind(spec_id)
+            .fetch_all(&mut *tx)
+            .await?;
+    let obce = sprawdz_liste(&k.ids, &obecne, "sekcja")?;
+    if let Some(id) = obce.first() {
+        return Err(BladApi::NieprawidloweDane(format!(
+            "sekcja {id} nie należy do specyfikacji {spec_id}"
+        )));
+    }
     for (i, id) in k.ids.iter().enumerate() {
         let n = sqlx::query(
             "UPDATE sekcje_specyfikacji SET kolejnosc = ?1 WHERE id = ?2 AND specyfikacja_id = ?3",
@@ -642,7 +946,7 @@ pub async fn kolejnosc_sekcji(pula: &SqlitePool, spec_id: i64, k: Kolejnosc) -> 
 
 /// Kopia sekcji (z częściami, wierszami i zdjęciami) – na końcu tej samej albo innej specyfikacji.
 pub async fn kopiuj_sekcje(pula: &SqlitePool, id: i64, dane: DaneKopii) -> Wynik<WynikZmiany> {
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let zrodlo_spec = spec_sekcji(&mut tx, id).await?;
     let cel = dane.cel_id.unwrap_or(zrodlo_spec);
     sprawdz_zapis(&mut tx, cel).await?;
@@ -731,7 +1035,7 @@ pub async fn dodaj_czesc(
     dane: DaneCzesci,
 ) -> Wynik<WynikZmiany> {
     let d = dane.oczysc()?;
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let spec_id = spec_sekcji(&mut tx, sekcja_id).await?;
     sprawdz_zapis(&mut tx, spec_id).await?;
     let id = wstaw_czesc(&mut tx, sekcja_id, &d.nazwa, d.cena_gr, d.po_czesci_id).await?;
@@ -764,30 +1068,69 @@ async fn wstaw_czesc(
 
 pub async fn zmien_czesc(pula: &SqlitePool, id: i64, dane: DaneCzesci) -> Wynik<WynikZmiany> {
     let d = dane.oczysc()?;
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let (_, spec_id) = rodzic_czesci(&mut tx, id).await?;
     sprawdz_zapis(&mut tx, spec_id).await?;
-    sqlx::query("UPDATE czesci_specyfikacji SET nazwa = ?1, cena_gr = ?2 WHERE id = ?3")
-        .bind(&d.nazwa)
-        .bind(d.cena_gr)
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-    dziennik(&mut tx, "czesci_specyfikacji", id, "zmiana").await?;
-    let w = wynik(&mut tx, id, spec_id).await?;
+    let w = zapisz_czesc_w(&mut tx, id, spec_id, &d).await?;
     tx.commit().await?;
     Ok(w)
 }
 
-pub async fn usun_czesc(pula: &SqlitePool, id: i64) -> Wynik<WynikZmiany> {
-    let mut tx = pula.begin().await?;
+/// Zmiana częściowa części (`PUT /czesci/{id}`) z wykrywaniem konfliktów pól.
+pub async fn zmien_czesc_czesciowo(
+    pula: &SqlitePool,
+    id: i64,
+    z: ZmianaCzesciowa,
+) -> Wynik<WynikZmiany> {
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
+    let stara = pobierz_czesc(&mut tx, id).await?;
     let (_, spec_id) = rodzic_czesci(&mut tx, id).await?;
     sprawdz_zapis(&mut tx, spec_id).await?;
+    let baza = dane_czesci(&stara);
+    z.sprawdz(&do_json(&baza), do_json(&stara), &nazwa_pola)?;
+    let d = z.zastosuj(&baza)?.oczysc()?;
+    let w = zapisz_czesc_w(&mut tx, id, spec_id, &d).await?;
+    tx.commit().await?;
+    Ok(w)
+}
+
+async fn zapisz_czesc_w(
+    tx: &mut SqliteConnection,
+    id: i64,
+    spec_id: i64,
+    d: &DaneCzesci,
+) -> Wynik<WynikZmiany> {
+    sqlx::query(&format!(
+        "UPDATE czesci_specyfikacji SET nazwa = ?1, cena_gr = ?2, wersja = wersja + 1, zmieniono = {TERAZ} \
+         WHERE id = ?3"
+    ))
+    .bind(&d.nazwa)
+    .bind(d.cena_gr)
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    dziennik(tx, "czesci_specyfikacji", id, "zmiana").await?;
+    wynik(tx, id, spec_id).await
+}
+
+pub async fn usun_czesc(pula: &SqlitePool, id: i64) -> Wynik<WynikZmiany> {
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
+    let (_, spec_id) = rodzic_czesci(&mut tx, id).await?;
+    sprawdz_zapis(&mut tx, spec_id).await?;
+    let do_potw: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM wiersze_specyfikacji WHERE czesc_id = ?1 AND status = 'do_potwierdzenia'",
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
     sqlx::query("DELETE FROM czesci_specyfikacji WHERE id = ?1")
         .bind(id)
         .execute(&mut *tx)
         .await?;
     dziennik(&mut tx, "czesci_specyfikacji", id, "usuniecie").await?;
+    if do_potw > 0 {
+        po_zmianie_statusu_wiersza(&mut tx, spec_id).await?;
+    }
     let w = wynik(&mut tx, id, spec_id).await?;
     tx.commit().await?;
     Ok(w)
@@ -799,9 +1142,15 @@ pub async fn kolejnosc_czesci(
     sekcja_id: i64,
     k: Kolejnosc,
 ) -> Wynik<WynikZmiany> {
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let spec_id = spec_sekcji(&mut tx, sekcja_id).await?;
     sprawdz_zapis(&mut tx, spec_id).await?;
+    let obecne: Vec<i64> =
+        sqlx::query_scalar("SELECT id FROM czesci_specyfikacji WHERE sekcja_id = ?1")
+            .bind(sekcja_id)
+            .fetch_all(&mut *tx)
+            .await?;
+    sprawdz_liste(&k.ids, &obecne, "część")?;
     for (i, id) in k.ids.iter().enumerate() {
         let (_, spec_czesci) = rodzic_czesci(&mut tx, *id).await?;
         if spec_czesci != spec_id {
@@ -809,12 +1158,15 @@ pub async fn kolejnosc_czesci(
                 "część {id} należy do innej specyfikacji"
             )));
         }
-        sqlx::query("UPDATE czesci_specyfikacji SET sekcja_id = ?1, kolejnosc = ?2 WHERE id = ?3")
-            .bind(sekcja_id)
-            .bind(i as i64)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "UPDATE czesci_specyfikacji SET sekcja_id = ?1, kolejnosc = ?2, \
+               wersja = wersja + (sekcja_id != ?1) WHERE id = ?3",
+        )
+        .bind(sekcja_id)
+        .bind(i as i64)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
     }
     sqlx::query(
         "UPDATE zdjecia_specyfikacji SET sekcja_id = \
@@ -831,7 +1183,7 @@ pub async fn kolejnosc_czesci(
 
 /// Kopia części z wierszami – w tej samej sekcji (zaraz za oryginałem) albo w innej.
 pub async fn kopiuj_czesc(pula: &SqlitePool, id: i64, dane: DaneKopii) -> Wynik<WynikZmiany> {
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let (sekcja_zrodlowa, _) = rodzic_czesci(&mut tx, id).await?;
     let cel = dane.cel_id.unwrap_or(sekcja_zrodlowa);
     let spec_cel = spec_sekcji(&mut tx, cel).await?;
@@ -957,7 +1309,8 @@ async fn rozlej_material_korpusu(db: &mut SqliteConnection, czesc_id: i64) -> Wy
     .await?;
     if let Some((kid, material, kategoria)) = korpus {
         sqlx::query(
-            "UPDATE wiersze_specyfikacji SET material = ?1, kategoria_materialu_id = ?2 \
+            "UPDATE wiersze_specyfikacji SET material = ?1, kategoria_materialu_id = ?2, \
+               wersja = wersja + (COALESCE(material, '') IS NOT COALESCE(?1, '')) \
              WHERE czesc_id = ?3 AND id != ?4 AND podgrupa = 'glowna' AND material_z_korpusu = 1",
         )
         .bind(material)
@@ -976,11 +1329,15 @@ pub async fn dodaj_wiersz(
     dane: DaneWiersza,
 ) -> Wynik<WynikZmiany> {
     let d = dane.oczysc()?;
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let (_, spec_id) = rodzic_czesci(&mut tx, czesc_id).await?;
     sprawdz_zapis(&mut tx, spec_id).await?;
+    let do_potw = d.status.as_deref() == Some("do_potwierdzenia");
     let id = wstaw_wiersz(&mut tx, czesc_id, d).await?;
     dziennik(&mut tx, "wiersze_specyfikacji", id, "dodanie").await?;
+    if do_potw {
+        po_zmianie_statusu_wiersza(&mut tx, spec_id).await?;
+    }
     let w = wynik(&mut tx, id, spec_id).await?;
     tx.commit().await?;
     Ok(w)
@@ -1038,12 +1395,49 @@ async fn wstaw_wiersz(db: &mut SqliteConnection, czesc_id: i64, mut d: DaneWiers
     Ok(id)
 }
 
+/// Pełna zmiana wiersza (wszystkie pola z `dane`; brakujące = puste).
 pub async fn zmien_wiersz(pula: &SqlitePool, id: i64, dane: DaneWiersza) -> Wynik<WynikZmiany> {
-    let mut d = dane.oczysc()?;
-    let mut tx = pula.begin().await?;
+    let d = dane.oczysc()?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let stary = pobierz_wiersz(&mut tx, id).await?;
     let (_, spec_id) = rodzic_czesci(&mut tx, stary.czesc_id).await?;
     sprawdz_zapis(&mut tx, spec_id).await?;
+    let w = zapisz_wiersz_w(&mut tx, &stary, spec_id, d).await?;
+    tx.commit().await?;
+    Ok(w)
+}
+
+/// Zmiana częściowa wiersza (`PUT /wiersze/{id}`): tylko przesłane pola, 409 przy konflikcie.
+pub async fn zmien_wiersz_czesciowo(
+    pula: &SqlitePool,
+    id: i64,
+    z: ZmianaCzesciowa,
+) -> Wynik<WynikZmiany> {
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
+    let stary = pobierz_wiersz(&mut tx, id).await?;
+    let (_, spec_id) = rodzic_czesci(&mut tx, stary.czesc_id).await?;
+    sprawdz_zapis(&mut tx, spec_id).await?;
+    let baza = dane_wiersza(&stary);
+    z.sprawdz(&do_json(&baza), do_json(&stary), &nazwa_pola)?;
+    let d = z.zastosuj(&baza)?.oczysc()?;
+    let w = zapisz_wiersz_w(&mut tx, &stary, spec_id, d).await?;
+    tx.commit().await?;
+    Ok(w)
+}
+
+/// Status wiersza przed i po zmianie – do powiadomienia innych modułów (np. kalendarza),
+/// gdy wiersz przechodzi z/na „do potwierdzenia”.
+pub fn zmiana_statusu_do_potwierdzenia(przed: &str, po: &str) -> bool {
+    (przed == "do_potwierdzenia") != (po == "do_potwierdzenia")
+}
+
+async fn zapisz_wiersz_w(
+    tx: &mut SqliteConnection,
+    stary: &Wiersz,
+    spec_id: i64,
+    mut d: DaneWiersza,
+) -> Wynik<WynikZmiany> {
+    let id = stary.id;
 
     let zmiana_materialu = d.material != stary.material;
     let mut z_korpusu = match d.material_z_korpusu {
@@ -1060,17 +1454,18 @@ pub async fn zmien_wiersz(pula: &SqlitePool, id: i64, dane: DaneWiersza) -> Wyni
         z_korpusu = true;
     }
     if z_korpusu && d.material_z_korpusu == Some(true) || (z_korpusu && d.material.is_none()) {
-        if let Some((m, k)) = material_korpusu(&mut tx, stary.czesc_id).await? {
+        if let Some((m, k)) = material_korpusu(tx, stary.czesc_id).await? {
             d.material = Some(m);
             d.kategoria_materialu_id = d.kategoria_materialu_id.or(k);
         }
     }
 
-    sqlx::query(
+    sqlx::query(&format!(
         "UPDATE wiersze_specyfikacji SET podgrupa = ?1, rodzaj = ?2, material = ?3, opis = ?4, ilosc = ?5, \
            jednostka = ?6, status = ?7, termin_potwierdzenia = ?8, kategoria_materialu_id = ?9, \
-           pozycja_slownika_id = ?10, cena_gr = ?11, material_z_korpusu = ?12 WHERE id = ?13",
-    )
+           pozycja_slownika_id = ?10, cena_gr = ?11, material_z_korpusu = ?12, \
+           wersja = wersja + 1, zmieniono = {TERAZ} WHERE id = ?13"
+    ))
     .bind(d.podgrupa.as_deref().unwrap_or("glowna"))
     .bind(&d.rodzaj)
     .bind(&d.material)
@@ -1090,16 +1485,24 @@ pub async fn zmien_wiersz(pula: &SqlitePool, id: i64, dane: DaneWiersza) -> Wyni
     if rowne_bez_wielkosci(d.rodzaj.as_deref(), RODZAJ_KORPUS)
         || rowne_bez_wielkosci(stary.rodzaj.as_deref(), RODZAJ_KORPUS)
     {
-        rozlej_material_korpusu(&mut tx, stary.czesc_id).await?;
+        rozlej_material_korpusu(tx, stary.czesc_id).await?;
     }
-    dziennik(&mut tx, "wiersze_specyfikacji", id, "zmiana").await?;
-    let w = wynik(&mut tx, id, spec_id).await?;
-    tx.commit().await?;
-    Ok(w)
+    dziennik(tx, "wiersze_specyfikacji", id, "zmiana").await?;
+    if zmiana_statusu_do_potwierdzenia(&stary.status, d.status.as_deref().unwrap_or("ustalone")) {
+        po_zmianie_statusu_wiersza(tx, spec_id).await?;
+    }
+    wynik(tx, id, spec_id).await
+}
+
+/// Punkt zaczepienia dla modułów zależnych od statusów wierszy (kalendarz: wiersze „do
+/// potwierdzenia” wstrzymują zamówienia materiałów). Wywoływany w transakcji zapisu wiersza,
+/// gdy wiersz przechodzi z/na „do potwierdzenia” (także przy dodaniu i usunięciu takiego wiersza).
+async fn po_zmianie_statusu_wiersza(_tx: &mut SqliteConnection, _spec_id: i64) -> Wynik<()> {
+    Ok(())
 }
 
 pub async fn usun_wiersz(pula: &SqlitePool, id: i64) -> Wynik<WynikZmiany> {
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let stary = pobierz_wiersz(&mut tx, id).await?;
     let (_, spec_id) = rodzic_czesci(&mut tx, stary.czesc_id).await?;
     sprawdz_zapis(&mut tx, spec_id).await?;
@@ -1108,6 +1511,9 @@ pub async fn usun_wiersz(pula: &SqlitePool, id: i64) -> Wynik<WynikZmiany> {
         .execute(&mut *tx)
         .await?;
     dziennik(&mut tx, "wiersze_specyfikacji", id, "usuniecie").await?;
+    if stary.status == "do_potwierdzenia" {
+        po_zmianie_statusu_wiersza(&mut tx, spec_id).await?;
+    }
     let w = wynik(&mut tx, stary.czesc_id, spec_id).await?;
     tx.commit().await?;
     Ok(w)
@@ -1119,9 +1525,15 @@ pub async fn kolejnosc_wierszy(
     czesc_id: i64,
     k: Kolejnosc,
 ) -> Wynik<WynikZmiany> {
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let (_, spec_id) = rodzic_czesci(&mut tx, czesc_id).await?;
     sprawdz_zapis(&mut tx, spec_id).await?;
+    let obecne: Vec<i64> =
+        sqlx::query_scalar("SELECT id FROM wiersze_specyfikacji WHERE czesc_id = ?1")
+            .bind(czesc_id)
+            .fetch_all(&mut *tx)
+            .await?;
+    let przeniesione = sprawdz_liste(&k.ids, &obecne, "wiersz")?;
     for (i, id) in k.ids.iter().enumerate() {
         let w = pobierz_wiersz(&mut tx, *id).await?;
         let (_, s) = rodzic_czesci(&mut tx, w.czesc_id).await?;
@@ -1130,12 +1542,21 @@ pub async fn kolejnosc_wierszy(
                 "wiersz {id} należy do innej specyfikacji"
             )));
         }
-        sqlx::query("UPDATE wiersze_specyfikacji SET czesc_id = ?1, kolejnosc = ?2 WHERE id = ?3")
-            .bind(czesc_id)
-            .bind(i as i64)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(&format!(
+            "UPDATE wiersze_specyfikacji SET czesc_id = ?1, kolejnosc = ?2, \
+               wersja = wersja + (czesc_id != ?1), zmieniono = CASE WHEN czesc_id != ?1 THEN {TERAZ} ELSE zmieniono END \
+             WHERE id = ?3"
+        ))
+        .bind(czesc_id)
+        .bind(i as i64)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    }
+    if !przeniesione.is_empty() {
+        // Wiersze przeniesione z innej części podążają za korpusem nowej części.
+        rozlej_material_korpusu(&mut tx, czesc_id).await?;
+        dziennik(&mut tx, "czesci_specyfikacji", czesc_id, "zmiana").await?;
     }
     let w = wynik(&mut tx, czesc_id, spec_id).await?;
     tx.commit().await?;
@@ -1145,7 +1566,7 @@ pub async fn kolejnosc_wierszy(
 /// „Kopiuj materiał w dół”: materiał (i kategoria) wiersza trafia do kolejnych wierszy tej samej
 /// części i podgrupy, które nie mają materiału albo mają materiał wypełniony automatycznie.
 pub async fn kopiuj_material_w_dol(pula: &SqlitePool, id: i64) -> Wynik<WynikZmiany> {
-    let mut tx = pula.begin().await?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let w = pobierz_wiersz(&mut tx, id).await?;
     let (_, spec_id) = rodzic_czesci(&mut tx, w.czesc_id).await?;
     sprawdz_zapis(&mut tx, spec_id).await?;
@@ -1155,7 +1576,8 @@ pub async fn kopiuj_material_w_dol(pula: &SqlitePool, id: i64) -> Wynik<WynikZmi
         ));
     }
     sqlx::query(
-        "UPDATE wiersze_specyfikacji SET material = ?1, kategoria_materialu_id = ?2, material_z_korpusu = 1 \
+        "UPDATE wiersze_specyfikacji SET material = ?1, kategoria_materialu_id = ?2, material_z_korpusu = 1, \
+           wersja = wersja + 1 \
          WHERE czesc_id = ?3 AND podgrupa = ?4 AND id != ?5 \
            AND (kolejnosc > ?6 OR (kolejnosc = ?6 AND id > ?5)) \
            AND (material IS NULL OR material_z_korpusu = 1)",

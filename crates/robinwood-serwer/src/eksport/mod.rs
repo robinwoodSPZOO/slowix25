@@ -1,8 +1,10 @@
 //! Eksport wersji oferty do DOCX i PDF.
 //!
 //! Najpierw budujemy niezależny od formatu model [`DokumentOferty`] (teksty już sformatowane),
-//! potem renderujemy go w `docx.rs` i `pdf.rs`. Dane wykonawcy pochodzą z ustawień (`firma.rs`).
-//! Koszt własny i marża NIGDY nie trafiają do dokumentu.
+//! potem renderujemy go w `docx.rs` i `pdf.rs`. Dane inwestora i wykonawcy: z migawki wersji
+//! (zapisanej przy wysłaniu oferty), a dla szkicu – bieżące z bazy klientów i ustawień.
+//! Koszt własny i marża NIGDY nie trafiają do dokumentu. Wycena z błędami (`Wycena::bledy`,
+//! np. rabaty większe niż suma) blokuje eksport (422).
 
 mod docx;
 mod pdf;
@@ -12,10 +14,8 @@ use std::path::Path;
 use sqlx::SqlitePool;
 
 use crate::bledy::{BladApi, Wynik};
-use crate::firma;
 use crate::formaty;
-use crate::klienci;
-use crate::oferty::{self, PelnaWersja};
+use crate::oferty::{self, DaneInwestora, DaneWykonawcy, PelnaWersja};
 use crate::pliki;
 use crate::specyfikacje::{Wiersz, Zdjecie};
 use crate::wycena::TrybCen;
@@ -94,6 +94,8 @@ const MAKS_BOK: u32 = 1200;
 
 fn przygotuj_obraz(bajty: &[u8], podpis: Option<String>) -> Option<ObrazDok> {
     use image023::GenericImageView;
+    // Pliki sprzed podglądów: sprawdzamy wymiary przed dekodowaniem.
+    pliki::sprawdz_wymiary(bajty).ok()?;
     let img = image023::load_from_memory(bajty).ok()?;
     let img = if img.width() > MAKS_BOK || img.height() > MAKS_BOK {
         img.thumbnail(MAKS_BOK, MAKS_BOK)
@@ -174,71 +176,55 @@ pub async fn zbuduj(
     ze_zdjeciami: bool,
 ) -> Wynik<DokumentOferty> {
     let p: PelnaWersja = oferty::pelna_wersja(pula, wersja_id).await?;
-    let firma = firma::pobierz(pula).await?;
-    let klient = klienci::pobierz(pula, p.oferta.klient_id).await.ok();
+    if !p.wycena.bledy.is_empty() {
+        return Err(BladApi::NieprawidloweDane(format!(
+            "nie można utworzyć dokumentu dla klienta: {}",
+            p.wycena.bledy.join("; ")
+        )));
+    }
+    let strony = match &p.wersja.migawka {
+        Some(m) => m.clone(),
+        None => {
+            let mut db = pula.acquire().await?;
+            oferty::migawka_w(&mut db, p.oferta.id).await?
+        }
+    };
 
     let mut zdjecia_bajty: Vec<(Zdjecie, Vec<u8>)> = Vec::new();
     if ze_zdjeciami {
         for z in &p.specyfikacja.zdjecia {
-            match pliki::odczytaj(pula, folder, z.plik_id).await {
+            match pliki::odczytaj(pula, folder, z.plik_id, true).await {
                 Ok((_, _, b)) => zdjecia_bajty.push((z.clone(), b)),
                 Err(e) => tracing::warn!("Pomijam zdjęcie {} w eksporcie: {e}", z.id),
             }
         }
     }
-    let obrazy = |f: &dyn Fn(&Zdjecie) -> bool| -> Vec<ObrazDok> {
+    // Dekodowanie i pomniejszanie obrazów poza wątkami async.
+    let przygotowane: Vec<(Zdjecie, ObrazDok)> = tokio::task::spawn_blocking(move || {
         zdjecia_bajty
+            .into_iter()
+            .filter_map(|(z, b)| {
+                let o = przygotuj_obraz(&b, z.podpis.clone());
+                if o.is_none() {
+                    tracing::warn!("Pomijam zdjęcie {} w eksporcie: nie da się odczytać", z.id);
+                }
+                o.map(|o| (z, o))
+            })
+            .collect()
+    })
+    .await
+    .map_err(blad_renderowania)?;
+    let obrazy = |f: &dyn Fn(&Zdjecie) -> bool| -> Vec<ObrazDok> {
+        przygotowane
             .iter()
             .filter(|(z, _)| f(z))
-            .filter_map(|(z, b)| przygotuj_obraz(b, z.podpis.clone()))
+            .map(|(_, o)| o.clone())
             .collect()
     };
 
     let w = &p.wersja;
-    let mut inwestor = Vec::new();
-    match &klient {
-        Some(k) => {
-            inwestor.push(k.nazwa.clone());
-            if let Some(u) = &k.adres_ulica {
-                inwestor.push(u.clone());
-            }
-            let miasto = [k.adres_kod.clone(), k.adres_miasto.clone()]
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>()
-                .join(" ");
-            if !miasto.is_empty() {
-                inwestor.push(miasto);
-            }
-        }
-        None => inwestor.push(p.oferta.klient_nazwa.clone()),
-    }
-
-    let mut wykonawca: Vec<String> = Vec::new();
-    if firma.firma_nazwa.is_empty() {
-        wykonawca.push("(uzupełnij dane firmy w Ustawieniach)".into());
-    } else {
-        wykonawca.push(firma.firma_nazwa.clone());
-    }
-    wykonawca.extend(
-        firma
-            .firma_adres
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(String::from),
-    );
-    if !firma.firma_nip.is_empty() {
-        wykonawca.push(format!("NIP: {}", firma.firma_nip));
-    }
-    let kontakt = [firma.firma_telefon.as_str(), firma.firma_email.as_str()]
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join(", ");
-    if !kontakt.is_empty() {
-        wykonawca.push(kontakt);
-    }
+    let inwestor = linie_inwestora(&strony.inwestor);
+    let wykonawca = linie_wykonawcy(&strony.wykonawca);
 
     let mut sekcje = Vec::new();
     for s in &p.specyfikacja.sekcje {
@@ -381,6 +367,53 @@ pub async fn zbuduj(
         klauzule: w.klauzule.clone(),
         zdjecia: obrazy(&|z: &Zdjecie| z.sekcja_id.is_none() && z.czesc_id.is_none()),
     })
+}
+
+/// Linie bloku „Inwestor” w dokumencie.
+pub fn linie_inwestora(k: &DaneInwestora) -> Vec<String> {
+    let mut inwestor = vec![k.nazwa.clone()];
+    if let Some(u) = k.adres_ulica.as_ref().filter(|u| !u.is_empty()) {
+        inwestor.push(u.clone());
+    }
+    let miasto = [k.adres_kod.clone(), k.adres_miasto.clone()]
+        .into_iter()
+        .flatten()
+        .filter(|x| !x.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if !miasto.is_empty() {
+        inwestor.push(miasto);
+    }
+    inwestor
+}
+
+/// Linie bloku „Wykonawca” w dokumencie.
+pub fn linie_wykonawcy(f: &DaneWykonawcy) -> Vec<String> {
+    let mut wykonawca: Vec<String> = Vec::new();
+    if f.nazwa.is_empty() {
+        wykonawca.push("(uzupełnij dane firmy w Ustawieniach)".into());
+    } else {
+        wykonawca.push(f.nazwa.clone());
+    }
+    wykonawca.extend(
+        f.adres
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(String::from),
+    );
+    if !f.nip.is_empty() {
+        wykonawca.push(format!("NIP: {}", f.nip));
+    }
+    let kontakt = [f.telefon.as_str(), f.email.as_str()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if !kontakt.is_empty() {
+        wykonawca.push(kontakt);
+    }
+    wykonawca
 }
 
 /// Nazwa pliku eksportu, np. `Oferta_OF-2026-001_v2.pdf` (bez polskich znaków).
