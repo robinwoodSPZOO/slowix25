@@ -74,6 +74,22 @@ impl DaneKlienta {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty());
         }
+        crate::limity::tekst(
+            "nazwa klienta",
+            Some(&self.nazwa),
+            crate::limity::MAKS_NAZWA,
+        )?;
+        for (n, p) in [
+            ("NIP", &self.nip),
+            ("e-mail", &self.email),
+            ("telefon", &self.telefon),
+            ("ulica", &self.adres_ulica),
+            ("kod pocztowy", &self.adres_kod),
+            ("miejscowość", &self.adres_miasto),
+        ] {
+            crate::limity::tekst(n, p.as_deref(), crate::limity::MAKS_NAZWA)?;
+        }
+        crate::limity::tekst("uwagi", self.uwagi.as_deref(), crate::limity::MAKS_DLUGI)?;
         if let Some(email) = &self.email {
             if !email.contains('@') {
                 return Err(BladApi::NieprawidloweDane(
@@ -112,6 +128,7 @@ pub async fn pobierz(pula: &SqlitePool, id: i64) -> Wynik<Klient> {
 
 pub async fn dodaj(pula: &SqlitePool, dane: DaneKlienta) -> Wynik<Klient> {
     let d = dane.oczysc()?;
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let id = sqlx::query(
         "INSERT INTO klienci (typ, nazwa, nip, email, telefon, adres_ulica, adres_kod, adres_miasto, \
          polecajacy_id, zgoda_marketing, zgoda_marketing_data, uwagi) \
@@ -129,10 +146,11 @@ pub async fn dodaj(pula: &SqlitePool, dane: DaneKlienta) -> Wynik<Klient> {
     .bind(d.polecajacy_id)
     .bind(d.zgoda_marketing)
     .bind(&d.uwagi)
-    .execute(pula)
+    .execute(&mut *tx)
     .await?
     .last_insert_rowid();
-    zapisz_w_dzienniku(pula, id, "dodanie").await?;
+    zapisz_w_dzienniku(&mut tx, id, "dodanie").await?;
+    tx.commit().await?;
     pobierz(pula, id).await
 }
 
@@ -143,6 +161,7 @@ pub async fn zmien(pula: &SqlitePool, id: i64, dane: DaneKlienta) -> Wynik<Klien
             "klient nie może polecać sam siebie".into(),
         ));
     }
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
     let zmienione = sqlx::query(
         "UPDATE klienci SET typ = ?1, nazwa = ?2, nip = ?3, email = ?4, telefon = ?5, adres_ulica = ?6, \
          adres_kod = ?7, adres_miasto = ?8, polecajacy_id = ?9, \
@@ -164,39 +183,59 @@ pub async fn zmien(pula: &SqlitePool, id: i64, dane: DaneKlienta) -> Wynik<Klien
     .bind(d.zgoda_marketing)
     .bind(&d.uwagi)
     .bind(id)
-    .execute(pula)
+    .execute(&mut *tx)
     .await?
     .rows_affected();
     if zmienione == 0 {
         return Err(BladApi::NieZnaleziono(format!("klient {id}")));
     }
-    zapisz_w_dzienniku(pula, id, "zmiana").await?;
+    zapisz_w_dzienniku(&mut tx, id, "zmiana").await?;
+    tx.commit().await?;
     pobierz(pula, id).await
 }
 
 /// Usunięcie miękkie: klient znika z list, ale oferty i umowy zachowują powiązanie.
 pub async fn usun(pula: &SqlitePool, id: i64) -> Wynik<()> {
-    let zmienione = sqlx::query(
-        "UPDATE klienci SET usunieto = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?1 AND usunieto IS NULL",
-    )
-    .bind(id)
-    .execute(pula)
-    .await?
-    .rows_affected();
+    ustaw_usuniecie(pula, id, true).await
+}
+
+/// Cofa usunięcie (miękkie) klienta; jego oferty znów można rozwijać.
+pub async fn przywroc(pula: &SqlitePool, id: i64) -> Wynik<Klient> {
+    ustaw_usuniecie(pula, id, false).await?;
+    pobierz(pula, id).await
+}
+
+async fn ustaw_usuniecie(pula: &SqlitePool, id: i64, usun: bool) -> Wynik<()> {
+    let mut tx = crate::baza::transakcja_zapisu(pula).await?;
+    let sql = if usun {
+        "UPDATE klienci SET usunieto = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?1 AND usunieto IS NULL"
+    } else {
+        "UPDATE klienci SET usunieto = NULL, zmieniono = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') \
+         WHERE id = ?1 AND usunieto IS NOT NULL"
+    };
+    let zmienione = sqlx::query(sql)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
     if zmienione == 0 {
-        return Err(BladApi::NieZnaleziono(format!("klient {id}")));
+        return Err(BladApi::NieZnaleziono(format!(
+            "klient {id}{}",
+            if usun { "" } else { " (wśród usuniętych)" }
+        )));
     }
-    zapisz_w_dzienniku(pula, id, "usuniecie").await?;
+    zapisz_w_dzienniku(&mut tx, id, if usun { "usuniecie" } else { "zmiana" }).await?;
+    tx.commit().await?;
     Ok(())
 }
 
-async fn zapisz_w_dzienniku(pula: &SqlitePool, id: i64, operacja: &str) -> Wynik<()> {
+async fn zapisz_w_dzienniku(db: &mut sqlx::SqliteConnection, id: i64, operacja: &str) -> Wynik<()> {
     sqlx::query(
         "INSERT INTO dziennik_zmian (tabela, rekord_id, operacja) VALUES ('klienci', ?1, ?2)",
     )
     .bind(id)
     .bind(operacja)
-    .execute(pula)
+    .execute(&mut *db)
     .await?;
     Ok(())
 }
@@ -233,6 +272,9 @@ mod testy {
         assert_eq!(lista(&pula, Some("testowy 2")).await.unwrap().len(), 1);
         usun(&pula, k.id).await.unwrap();
         assert!(lista(&pula, None).await.unwrap().is_empty());
+        assert_eq!(przywroc(&pula, k.id).await.unwrap().id, k.id);
+        assert_eq!(lista(&pula, None).await.unwrap().len(), 1);
+        usun(&pula, k.id).await.unwrap();
         assert!(matches!(
             pobierz(&pula, k.id).await,
             Err(BladApi::NieZnaleziono(_))

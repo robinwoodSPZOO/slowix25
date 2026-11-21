@@ -20,6 +20,8 @@ pub struct PozycjaSlownika {
     pub dekor: Option<String>,
     pub kategoria_materialu_id: Option<i64>,
     pub kolejnosc: i64,
+    /// Podpowiadana podgrupa wiersza specyfikacji (np. „wyposazenie”) – od migracji 0002.
+    pub podgrupa: Option<String>,
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -42,7 +44,7 @@ pub async fn lista_slownikow(pula: &SqlitePool) -> Wynik<Vec<Slownik>> {
 
 pub async fn pozycje(pula: &SqlitePool, kod: &str) -> Wynik<Vec<PozycjaSlownika>> {
     Ok(sqlx::query_as(
-        "SELECT id, slownik_kod, wartosc, producent, dekor, kategoria_materialu_id, kolejnosc \
+        "SELECT id, slownik_kod, wartosc, producent, dekor, kategoria_materialu_id, kolejnosc, podgrupa \
          FROM pozycje_slownika WHERE slownik_kod = ?1 AND aktywna = 1 ORDER BY kolejnosc, wartosc",
     )
     .bind(kod)
@@ -54,6 +56,16 @@ pub async fn kategorie_materialow(pula: &SqlitePool) -> Wynik<Vec<KategoriaMater
     Ok(sqlx::query_as(
         "SELECT id, nazwa, opis, domyslny_dostawca_id, dni_dostawy_min, dni_dostawy_max \
          FROM kategorie_materialow WHERE aktywna = 1 ORDER BY nazwa",
+    )
+    .fetch_all(pula)
+    .await?)
+}
+
+/// Aktywne pozycje wszystkich słowników jednym zapytaniem.
+pub async fn wszystkie_pozycje(pula: &SqlitePool) -> Wynik<Vec<PozycjaSlownika>> {
+    Ok(sqlx::query_as(
+        "SELECT id, slownik_kod, wartosc, producent, dekor, kategoria_materialu_id, kolejnosc, podgrupa \
+         FROM pozycje_slownika WHERE aktywna = 1 ORDER BY slownik_kod, kolejnosc, wartosc",
     )
     .fetch_all(pula)
     .await?)

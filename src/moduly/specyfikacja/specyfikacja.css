@@ -1,0 +1,126 @@
+/* Edytor specyfikacji: trzy kolumny (drzewo | tabela | panel).
+ * Szerokości zależą od DOSTĘPNEJ szerokości edytora (container queries), a nie od szerokości
+ * okna w pikselach CSS – przy skalowaniu Windows 125% (1920×1080 → 1536×864) środek nie może
+ * zostać ściśnięty przez szerokie panele. Drzewo i panel można zwinąć (przyciski nad tabelą). */
+.edytor-specyfikacji {
+  container-type: inline-size;
+  container-name: edytor;
+  display: grid;
+  --kol-drzewa: clamp(170px, 14cqi, var(--szer-drzewa));
+  --kol-panelu: clamp(250px, 19cqi, var(--szer-panelu));
+  grid-template-columns: var(--kol-drzewa) minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  background: var(--tlo-powierzchni);
+}
+.edytor-specyfikacji--z-panelem { grid-template-columns: var(--kol-drzewa) minmax(0, 1fr) var(--kol-panelu); }
+.edytor-specyfikacji--bez-drzewa { grid-template-columns: minmax(0, 1fr); }
+.edytor-specyfikacji--bez-drzewa.edytor-specyfikacji--z-panelem { grid-template-columns: minmax(0, 1fr) var(--kol-panelu); }
+.edytor-specyfikacji__przelaczniki { display: flex; justify-content: space-between; margin: calc(-1 * var(--o-4)) 0 calc(-1 * var(--o-4)); }
+.edytor-specyfikacji__srodek { container-type: inline-size; container-name: srodek; }
+.edytor-specyfikacji__drzewo { border-right: 1px solid var(--linia); background: var(--tlo-powierzchni-2); overflow: auto; min-height: 0; }
+.edytor-specyfikacji__srodek { overflow: auto; min-height: 0; padding: var(--o-12) var(--o-16); display: flex; flex-direction: column; gap: var(--o-8); }
+.edytor-specyfikacji__panel { border-left: 1px solid var(--linia); background: var(--tlo-powierzchni-2); overflow: auto; min-height: 0; }
+.edytor-specyfikacji__tytul h2 { margin: 0; font-size: var(--rozmiar-h2); }
+.edytor-specyfikacji__okruszek { font-size: var(--rozmiar-etykieta); color: var(--tekst-wyciszony); }
+.edytor-specyfikacji__pusto { display: grid; place-items: center; gap: var(--o-8); color: var(--tekst-wyciszony); padding: var(--o-48); text-align: center; }
+
+.drzewo-specyfikacji { display: flex; flex-direction: column; padding: var(--o-8); gap: var(--o-4); }
+.drzewo-specyfikacji__naglowek { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--o-4); padding: var(--o-4) var(--o-4) var(--o-8); }
+.drzewo-specyfikacji__naglowek h3 { margin: 0; font-size: var(--rozmiar-h3); }
+.drzewo-specyfikacji__przyciski { display: flex; gap: var(--o-2); }
+.drzewo-specyfikacji__pusto { color: var(--tekst-wyciszony); font-size: var(--rozmiar-etykieta); padding: var(--o-8); }
+.drzewo-specyfikacji__edycja { height: 24px; width: 100%; font-size: var(--rozmiar-tabela); }
+
+.tabela-wierszy { display: flex; flex-direction: column; gap: var(--o-4); }
+.tabela-wierszy__przewijanie { overflow-x: auto; }
+/* Kolumny: Opis elastyczny (min. ~200 px), pozostałe stałe; tabela przewija się poziomo
+ * dopiero wtedy, gdy nawet po zwężeniu nie mieści się w środku edytora. */
+.tabela--edycja { table-layout: fixed; width: 100%; min-width: 760px; }
+.tabela--agd { min-width: 850px; }
+.tabela--edycja .kol-uchwyt { width: 20px; }
+.tabela--edycja .kol-rodzaj { width: clamp(92px, 12cqi, 180px); }
+.tabela--edycja .kol-material { width: clamp(120px, 18cqi, 300px); }
+.tabela--edycja .kol-opis { width: auto; }
+.tabela--edycja .kol-ilosc { width: 60px; }
+.tabela--edycja .kol-jm { width: 56px; }
+.tabela--edycja .kol-status { width: 164px; }
+.tabela--edycja .kol-cena { width: 100px; }
+.tabela--edycja .kol-akcje { width: 78px; }
+@container srodek (max-width: 720px) {
+  .tabela--edycja { min-width: 690px; }
+  .tabela--agd { min-width: 790px; }
+  .tabela--edycja .kol-status { width: 44px; }
+  .komorka-status select { color: transparent; width: 22px; background-image: none; }
+  .komorka-status select option { color: var(--tekst); }
+  .tabela-wierszy__skroty { display: none; }
+}
+.tabela-wierszy__uchwyt { padding: 0 !important; text-align: center; color: var(--tekst-wyciszony); }
+.tabela-wierszy__uchwyt span { cursor: grab; display: inline-flex; padding: 6px 2px; }
+.tabela-wierszy__wiersz--ciagniety { opacity: 0.6; }
+.wskaznik-zapisu { align-self: flex-end; display: inline-flex; align-items: center; gap: var(--o-4); font-size: var(--rozmiar-mikro); padding: 1px var(--o-6); border-radius: var(--r-4); }
+.wskaznik-zapisu[data-stan="zapisywanie"] svg { animation: obrot 1s linear infinite; }
+@keyframes obrot { to { transform: rotate(360deg); } }
+.tabela-wierszy__bledy { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--o-4); }
+.pasek-cofnij { display: flex; align-items: center; gap: var(--o-12); padding: var(--o-6) var(--o-12); background: var(--tlo-paska); color: var(--tekst-paska-aktywny); border-radius: var(--r-6); align-self: flex-start; font-size: var(--rozmiar-tabela); }
+.lista-celow { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--o-2); }
+.tabela--edycja td { padding: 1px 2px; height: 32px; }
+.tabela--edycja th { padding: var(--o-6) var(--o-6); }
+.komorka {
+  width: 100%; height: var(--wys-pola-tabeli);
+  border: 1px solid transparent; border-radius: var(--r-4);
+  background: transparent; color: var(--tekst);
+  font: inherit; font-size: var(--rozmiar-tabela);
+  padding: 0 var(--o-6);
+  text-overflow: ellipsis;
+}
+.komorka:hover:not([readonly]):not(:disabled) { border-color: var(--linia); background: var(--tlo-powierzchni); }
+.komorka:focus { outline: none; border-color: var(--akcent); background: var(--tlo-powierzchni); box-shadow: var(--fokus); }
+.komorka:invalid { border-color: var(--stan-czerwony); }
+/* Podpowiedzi z <datalist> pokazują się przy pisaniu; strzałka listy zabierałaby miejsce w wąskiej komórce. */
+.komorka::-webkit-calendar-picker-indicator { display: none !important; width: 0; margin: 0; padding: 0; }
+.komorka::-webkit-list-button { display: none !important; }
+.komorka--liczba { text-align: right; font-variant-numeric: tabular-nums; }
+select.komorka { padding-left: var(--o-2); cursor: pointer; }
+select.komorka:disabled { color: var(--tekst); opacity: 1; cursor: default; }
+.komorka-z-ikona { position: relative; display: flex; align-items: center; }
+.komorka-z-ikona--z-ikona .komorka { padding-right: 22px; }
+.komorka-z-ikona__ikona { position: absolute; right: 6px; color: var(--akcent); display: inline-flex; }
+.komorka-status { display: flex; align-items: center; gap: var(--o-2); padding-left: var(--o-4); min-width: 0; }
+.komorka-status select {
+  min-width: 0; flex: 1; text-overflow: clip;
+  /* bez szerokiej strzałki systemowej – pełna nazwa statusu mieści się w kolumnie */
+  appearance: none; -webkit-appearance: none;
+  padding-right: 12px;
+  background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%238a857b'/%3E%3C/svg%3E") no-repeat right 2px center;
+}
+.status-wiersza--ustalone .komorka-status { color: var(--stan-spokojnie); }
+.status-wiersza--do_potwierdzenia .komorka-status { color: var(--stan-pomaranczowy); }
+.status-wiersza--do_potwierdzenia td:first-child { box-shadow: inset 3px 0 0 var(--stan-pomaranczowy); }
+.status-wiersza--po_stronie_klienta .komorka-status { color: var(--stan-neutralny); }
+.status-wiersza--poza_wycena .komorka-status { color: var(--stan-czerwony); }
+.status-wiersza--poza_wycena .komorka:not(select) { color: var(--tekst-wyciszony); text-decoration: line-through; }
+.tabela-wierszy__wiersz--zmieniony td { background: #fffbea; }
+.tabela-wierszy__grupa td {
+  background: var(--tlo-powierzchni-2); font-size: var(--rozmiar-etykieta); font-weight: var(--waga-pogrubiona);
+  color: var(--tekst-drugorzedny); padding: var(--o-6) var(--o-8);
+}
+.tabela-wierszy__grupa svg { vertical-align: -2px; }
+.tabela-wierszy__akcje { white-space: nowrap; text-align: right; }
+.tabela-wierszy__akcje .przycisk { opacity: 0.35; }
+.tabela-wierszy__wiersz:hover .tabela-wierszy__akcje .przycisk,
+.tabela-wierszy__wiersz:focus-within .tabela-wierszy__akcje .przycisk { opacity: 1; }
+.tabela-wierszy__pusto { color: var(--tekst-wyciszony); text-align: center; padding: var(--o-16); }
+.tabela-wierszy__dodaj { display: flex; align-items: center; gap: var(--o-4); flex-wrap: wrap; }
+.tabela-wierszy__skroty { margin-left: auto; font-size: var(--rozmiar-mikro); color: var(--tekst-wyciszony); }
+
+.lista-szablonow { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: var(--o-8); }
+.lista-szablonow__pozycja {
+  display: flex; flex-direction: column; align-items: flex-start; gap: var(--o-2);
+  padding: var(--o-8) var(--o-12); text-align: left;
+  border: 1px solid var(--linia); border-radius: var(--r-8); background: var(--tlo-powierzchni);
+}
+.lista-szablonow__pozycja span { font-size: var(--rozmiar-mikro); color: var(--tekst-wyciszony); }
+.lista-szablonow__pozycja--wybrana { border-color: var(--akcent); box-shadow: var(--fokus); }
+.lista-czesci { border: 0; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: var(--o-4) var(--o-16); }
+.lista-czesci label { display: inline-flex; gap: var(--o-6); align-items: center; font-size: var(--rozmiar-tabela); }

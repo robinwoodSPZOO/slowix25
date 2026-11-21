@@ -5,12 +5,28 @@
 //! samodzielny program `robinwood-serwer` (np. na mini PC bez interfejsu).
 
 pub mod api;
+pub mod api_kalendarz;
+pub mod api_oferty;
 pub mod baza;
 pub mod bledy;
+pub mod eksport;
+pub mod firma;
+pub mod formaty;
+pub mod kalendarz;
 pub mod klienci;
+pub mod limity;
 pub mod mdns;
+pub mod oferty;
+pub mod pliki;
+pub mod roznice;
 pub mod slowniki;
+pub mod specyfikacje;
+pub mod szablony;
+pub mod terminarz;
+pub mod wejscie;
+pub mod wycena;
 pub mod zdarzenia;
+pub mod zmiany;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -59,7 +75,13 @@ impl UruchomionySerwer {
 /// Otwiera bazę (z migracjami), uruchamia API w tle i opcjonalnie ogłasza się przez mDNS.
 pub async fn uruchom(ustawienia: UstawieniaSerwera) -> anyhow::Result<UruchomionySerwer> {
     let pula = baza::otworz(&ustawienia.sciezka_bazy).await?;
-    let stan = StanApi::nowy(pula, ustawienia.klucz_api.clone(), ustawienia.nazwa.clone());
+    let folder_danych = ustawienia
+        .sciezka_bazy
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
+    let stan = StanApi::nowy(pula, ustawienia.klucz_api.clone(), ustawienia.nazwa.clone())
+        .z_folderem_danych(folder_danych);
     let aplikacja = api::router(stan);
 
     let nasluch = tokio::net::TcpListener::bind(ustawienia.adres).await?;

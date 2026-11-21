@@ -1,14 +1,16 @@
-import { Zaslepka } from "../Zaslepka";
+import { Route, Routes } from "react-router-dom";
+import { EkranOferty } from "./EkranOferty";
+import { ListaOfert } from "./ListaOfert";
+import { UstawieniaOfert } from "./UstawieniaOfert";
+import "./oferty.css";
 
+/** Moduł Oferty: lista, ekran oferty (edytor + wycena + wersje), dane firmy do dokumentów. */
 export function Oferty() {
   return (
-    <Zaslepka tytul="Oferty" faza="Generator Ofert">
-      <ul>
-        <li>Edytor specyfikacji: sekcja → część → wiersze Rodzaj | Materiał | Opis | Ilość → Wyposażenie.</li>
-        <li>Status wiersza: ustalone / do potwierdzenia / po stronie klienta / poza wyceną; kategoria materiału.</li>
-        <li>Wycena na poziomie modułu, sekcji lub całości; rabaty; VAT 8% / 23%; zdjęcia; wersje v1, v2…</li>
-        <li>Eksport do PDF i DOCX.</li>
-      </ul>
-    </Zaslepka>
+    <Routes>
+      <Route index element={<ListaOfert />} />
+      <Route path="ustawienia" element={<UstawieniaOfert />} />
+      <Route path=":id" element={<EkranOferty />} />
+    </Routes>
   );
 }
