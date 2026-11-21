@@ -46,7 +46,7 @@ const SETKI: [&str; 10] = [
 ];
 
 /// Forma rzeczownika po liczebniku: `[1, 2–4, 5+]`.
-pub fn forma<'a>(n: u64, formy: [&'a str; 3]) -> &'a str {
+pub fn forma(n: u64, formy: [&str; 3]) -> &str {
     if n == 1 {
         return formy[0];
     }

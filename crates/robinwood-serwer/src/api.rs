@@ -83,6 +83,8 @@ pub fn router(stan: StanApi) -> Router {
         // Faza 2: specyfikacje, oferty, szablony, zdjęcia, eksport (crate::api_oferty)
         .merge(crate::api_oferty::trasy())
         .merge(crate::api_kalendarz::trasy())
+        // Faza 3: umowy, wpłaty, aneksy, dokumenty z szablonów (crate::api_umowy)
+        .merge(crate::api_umowy::trasy())
         .route_layer(middleware::from_fn_with_state(stan.clone(), sprawdz_klucz));
 
     let api = Router::new().route("/status", get(status)).merge(chronione);

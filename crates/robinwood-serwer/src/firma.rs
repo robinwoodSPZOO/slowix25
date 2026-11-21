@@ -16,6 +16,10 @@ pub struct DaneFirmy {
     pub firma_email: String,
     pub oferta_waznosc_dni: i64,
     pub oferta_termin_realizacji: String,
+    /// Dane do umów (Faza 3): bank, numer rachunku, SWIFT/BIC.
+    pub firma_bank: String,
+    pub firma_rachunek: String,
+    pub firma_swift: String,
 }
 
 const KLUCZE_TEKSTOWE: &[&str] = &[
@@ -25,6 +29,9 @@ const KLUCZE_TEKSTOWE: &[&str] = &[
     "firma_telefon",
     "firma_email",
     "oferta_termin_realizacji",
+    "firma_bank",
+    "firma_rachunek",
+    "firma_swift",
 ];
 
 pub async fn pobierz_w(db: &mut SqliteConnection) -> Wynik<DaneFirmy> {
@@ -46,6 +53,9 @@ pub async fn pobierz_w(db: &mut SqliteConnection) -> Wynik<DaneFirmy> {
             "firma_email" => d.firma_email = v,
             "oferta_waznosc_dni" => d.oferta_waznosc_dni = v.parse().unwrap_or(30),
             "oferta_termin_realizacji" => d.oferta_termin_realizacji = v,
+            "firma_bank" => d.firma_bank = v,
+            "firma_rachunek" => d.firma_rachunek = v,
+            "firma_swift" => d.firma_swift = v,
             _ => {}
         }
     }
@@ -74,6 +84,9 @@ pub async fn zapisz(pula: &SqlitePool, d: DaneFirmy) -> Wynik<DaneFirmy> {
             &d.oferta_termin_realizacji,
             crate::limity::MAKS_NAZWA,
         ),
+        ("bank", &d.firma_bank, crate::limity::MAKS_NAZWA),
+        ("numer rachunku", &d.firma_rachunek, 60),
+        ("SWIFT", &d.firma_swift, 20),
     ] {
         crate::limity::tekst(n, Some(v), m)?;
     }
@@ -85,6 +98,9 @@ pub async fn zapisz(pula: &SqlitePool, d: DaneFirmy) -> Wynik<DaneFirmy> {
         d.firma_telefon.trim().to_string(),
         d.firma_email.trim().to_string(),
         d.oferta_termin_realizacji.trim().to_string(),
+        d.firma_bank.trim().to_string(),
+        d.firma_rachunek.trim().to_string(),
+        d.firma_swift.trim().to_string(),
     ];
     for (k, v) in KLUCZE_TEKSTOWE.iter().zip(wartosci) {
         sqlx::query(

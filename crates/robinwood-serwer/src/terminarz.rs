@@ -1790,6 +1790,17 @@ pub async fn przelicz_po_zmianie_specyfikacji(
     Ok(wynik)
 }
 
+/// Dla Generatora Umów: wygenerowanie (pierwsze) albo przeliczenie harmonogramu zlecenia
+/// w transakcji wywołującego – np. po podpisaniu umowy lub aneksu. Błąd danych zwraca
+/// powód w `Err` (zlecenie dostaje znacznik `harmonogram_nieaktualny`), błąd bazy – `Wynik::Err`.
+pub async fn generuj_w_transakcji(
+    conn: &mut SqliteConnection,
+    id: i64,
+) -> Wynik<Result<WynikGenerowania, String>> {
+    let (u, kal) = kalendarz_dni(conn).await?;
+    przelicz_w(conn, id, &u, &kal).await
+}
+
 /// Przelicza (w transakcji wywołującego) wszystkie zlecenia z harmonogramem poza etapami po
 /// montażu. Nieudane są oznaczane i zwracane z powodem.
 pub async fn przelicz_wszystkie_w(

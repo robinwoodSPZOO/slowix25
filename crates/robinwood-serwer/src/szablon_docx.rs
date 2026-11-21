@@ -34,6 +34,10 @@ pub struct DaneSzablonu {
     pub bloki: BTreeMap<String, String>,
     /// Klucz bloku warunkowego → czy dołączyć treść.
     pub warunki: BTreeMap<String, bool>,
+    /// Inne nazwy pól (np. znacznik `w:tag` kontrolki treści) → klucz kanoniczny.
+    pub aliasy: BTreeMap<String, String>,
+    /// Pola celowo zostawiane w dokumencie bez zmian (np. `[uzupełnij]` do wpisania ręcznie).
+    pub pomijane: Vec<String>,
 }
 
 impl DaneSzablonu {
@@ -45,6 +49,17 @@ impl DaneSzablonu {
     }
     pub fn warunek(&mut self, nazwa: &str, tak: bool) {
         self.warunki.insert(normalizuj(nazwa), tak);
+    }
+    pub fn alias(&mut self, inna_nazwa: &str, nazwa: &str) {
+        self.aliasy.insert(normalizuj(inna_nazwa), normalizuj(nazwa));
+    }
+    pub fn pomin(&mut self, nazwa: &str) {
+        self.pomijane.push(normalizuj(nazwa));
+    }
+    /// Klucz kanoniczny dla nazwy z szablonu (z uwzględnieniem aliasów).
+    pub fn klucz(&self, nazwa: &str) -> String {
+        let n = normalizuj(nazwa);
+        self.aliasy.get(&n).cloned().unwrap_or(n)
     }
 }
 
@@ -58,6 +73,10 @@ pub struct RaportSzablonu {
     pub puste: Vec<String>,
     /// Bloki warunkowe znalezione w szablonie.
     pub bloki_warunkowe: Vec<String>,
+    /// Pola zostawione celowo do ręcznego uzupełnienia (np. `[uzupełnij]`) i ich liczba.
+    pub do_uzupelnienia: usize,
+    /// Kontrolki treści Worda rozpoznane po nazwie lub znaczniku i zastąpione wartością.
+    pub kontrolki: usize,
     pub ostrzezenia: Vec<String>,
 }
 
@@ -571,9 +590,9 @@ fn bloki_warunkowe(mut x: String, dane: &DaneSzablonu, r: &mut RaportSzablonu) -
             continue;
         }
         dodaj_raz(&mut r.bloki_warunkowe, &nazwa);
-        let klucz = normalizuj(&nazwa);
+        let klucz = dane.klucz(&nazwa);
         let koniec = znajdz_znacznik(&x, e1, &|t| {
-            nazwa_warunku(t).is_some_and(|(z, n)| z && normalizuj(&n) == klucz)
+            nazwa_warunku(t).is_some_and(|(z, n)| z && dane.klucz(&n) == klucz)
         });
         let Some((s2, e2, zn2)) = koniec else {
             r.ostrzezenia.push(format!(
@@ -654,13 +673,13 @@ fn wstaw_bloki(mut x: String, dane: &DaneSzablonu, r: &mut RaportSzablonu, glown
     let mut od = 0;
     for _ in 0..1000 {
         let Some((s, e, zn)) = znajdz_znacznik(&x, od, &|t| {
-            !t.starts_with("[[") && dane.bloki.contains_key(&normalizuj(&xml::unescape(&t[1..t.len() - 1])))
+            !t.starts_with("[[") && dane.bloki.contains_key(&dane.klucz(&xml::unescape(&t[1..t.len() - 1])))
         }) else {
             break;
         };
         let nazwa = xml::unescape(&zn[1..zn.len() - 1]);
         dodaj_raz(&mut r.pola, nazwa.trim());
-        let blok = &dane.bloki[&normalizuj(&nazwa)];
+        let blok = &dane.bloki[&dane.klucz(&nazwa)];
         if !glowna {
             r.ostrzezenia.push(format!(
                 "pole blokowe {zn} w nagłówku/stopce – pominięte (wstaw je w treści dokumentu)"
@@ -713,6 +732,138 @@ fn wstaw_bloki(mut x: String, dane: &DaneSzablonu, r: &mut RaportSzablonu, glown
     x
 }
 
+/// Wartość atrybutu `w:val` elementu `<w:{el} …/>` w fragmencie.
+fn wartosc_atrybutu(f: &str, el: &str) -> Option<String> {
+    let i = f.find(&format!("<w:{el} "))?;
+    let reszta = &f[i..];
+    let k = reszta.find("/>").or_else(|| reszta.find('>'))?;
+    let tag = &reszta[..k];
+    let a = tag.find("w:val=\"")? + 7;
+    let b = tag[a..].find('"')?;
+    Some(xml::unescape(&tag[a..a + b]))
+}
+
+/// Koniec elementu `<w:sdt>` zaczynającego się w `od` (z uwzględnieniem zagnieżdżeń).
+fn koniec_sdt(x: &str, od: usize) -> Option<usize> {
+    let mut glebokosc = 0i32;
+    let mut i = od;
+    while i < x.len() {
+        let r = &x[i..];
+        if r.starts_with("<w:sdt>") || r.starts_with("<w:sdt ") {
+            glebokosc += 1;
+            i += 6;
+        } else if r.starts_with("</w:sdt>") {
+            glebokosc -= 1;
+            i += 8;
+            if glebokosc == 0 {
+                return Some(i);
+            }
+        } else {
+            i += r.find('<').filter(|&k| k > 0).unwrap_or(1);
+        }
+    }
+    None
+}
+
+fn przebiegi_wartosci(rpr: &str, wartosc: &str) -> String {
+    let linie: Vec<String> = wartosc.split('\n').map(xml::escape).collect();
+    format!(
+        "<w:r>{rpr}<w:t xml:space=\"preserve\">{}</w:t></w:r>",
+        linie.join("</w:t><w:br/><w:t xml:space=\"preserve\">")
+    )
+}
+
+/// Krok 0: kontrolki treści Worda (`w:sdt`) z nazwą (`w:alias`) albo znacznikiem (`w:tag`)
+/// odpowiadającym polu – cała kontrolka jest zastępowana wartością (formatowanie z pierwszego
+/// przebiegu). Dzięki temu znika też powiązanie z danymi XML (`w:dataBinding`), które przy
+/// otwarciu w Wordzie przywróciłoby treść z szablonu.
+fn kontrolki_tresci(x: &str, dane: &DaneSzablonu, r: &mut RaportSzablonu, glowna: bool) -> String {
+    let mut wynik = String::with_capacity(x.len());
+    let mut poz = 0;
+    loop {
+        let a = x[poz..].find("<w:sdt>");
+        let b = x[poz..].find("<w:sdt ");
+        let start = match (a, b) {
+            (Some(a), Some(b)) => poz + a.min(b),
+            (Some(a), None) => poz + a,
+            (None, Some(b)) => poz + b,
+            (None, None) => break,
+        };
+        let Some(koniec) = koniec_sdt(x, start) else { break };
+        let sdt = &x[start..koniec];
+        let pr_do = sdt.find("</w:sdtPr>").unwrap_or(0);
+        let pr = &sdt[..pr_do];
+        let mut klucz = None;
+        let mut nazwa = String::new();
+        for kandydat in [wartosc_atrybutu(pr, "alias"), wartosc_atrybutu(pr, "tag")]
+            .into_iter()
+            .flatten()
+        {
+            let k = dane.klucz(&kandydat);
+            if dane.pola.contains_key(&k) || dane.bloki.contains_key(&k) {
+                nazwa = kandydat;
+                klucz = Some(k);
+                break;
+            }
+        }
+        let Some(klucz) = klucz else {
+            // nieznana kontrolka – zostaje; szukamy dalej wewnątrz niej
+            wynik.push_str(&x[poz..start + 6]);
+            poz = start + 6;
+            continue;
+        };
+        let tresc = sdt
+            .find("<w:sdtContent>")
+            .map(|i| {
+                let od = i + 14;
+                let do_ = sdt.rfind("</w:sdtContent>").unwrap_or(sdt.len());
+                &sdt[od..do_.max(od)]
+            })
+            .unwrap_or("");
+        let blokowa = tresc.contains("<w:p>") || tresc.contains("<w:p ") || tresc.contains("<w:tbl>");
+        let rpr = tresc
+            .find("<w:rPr>")
+            .and_then(|i| tresc[i..].find("</w:rPr>").map(|k| &tresc[i..i + k + 8]))
+            .unwrap_or("");
+        let nowy = if let Some(blok) = dane.bloki.get(&klucz) {
+            if !blokowa || !glowna {
+                r.ostrzezenia.push(format!(
+                    "kontrolka „{nazwa}” musi obejmować cały akapit, aby wstawić w niej tabelę – pominięto"
+                ));
+                wynik.push_str(&x[poz..koniec]);
+                poz = koniec;
+                continue;
+            }
+            blok.clone()
+        } else {
+            let w = &dane.pola[&klucz];
+            let w = if w.trim().is_empty() {
+                dodaj_raz(&mut r.puste, nazwa.trim());
+                PUSTE_POLE.to_string()
+            } else {
+                w.clone()
+            };
+            let przebiegi = przebiegi_wartosci(rpr, &w);
+            if blokowa {
+                let ppr = tresc
+                    .find("<w:pPr>")
+                    .and_then(|i| tresc[i..].find("</w:pPr>").map(|k| &tresc[i..i + k + 8]))
+                    .unwrap_or("");
+                format!("<w:p>{ppr}{przebiegi}</w:p>")
+            } else {
+                przebiegi
+            }
+        };
+        dodaj_raz(&mut r.pola, nazwa.trim());
+        r.kontrolki += 1;
+        wynik.push_str(&x[poz..start]);
+        wynik.push_str(&nowy);
+        poz = koniec;
+    }
+    wynik.push_str(&x[poz..]);
+    wynik
+}
+
 /// Krok 4: pola tekstowe.
 fn zamien_pola(x: &str, dane: &DaneSzablonu, r: &mut RaportSzablonu) -> String {
     let mut zamiany = Vec::new();
@@ -731,8 +882,12 @@ fn zamien_pola(x: &str, dane: &DaneSzablonu, r: &mut RaportSzablonu) -> String {
                 continue;
             }
             let nazwa = xml::unescape(&zn[1..zn.len() - 1]);
-            let klucz = normalizuj(&nazwa);
+            let klucz = dane.klucz(&nazwa);
             if klucz.is_empty() {
+                continue;
+            }
+            if dane.pomijane.contains(&klucz) {
+                r.do_uzupelnienia += 1;
                 continue;
             }
             let Some(wartosc) = dane.pola.get(&klucz) else {
@@ -849,7 +1004,8 @@ fn bez_makr(czesci: &mut Vec<(String, Vec<u8>)>) -> bool {
     czesci.retain(|(n, _)| {
         let makro = n.ends_with("vbaProject.bin")
             || n.ends_with("vbaData.xml")
-            || n.ends_with("vbaProject.bin.rels");
+            || n.ends_with("vbaProject.bin.rels")
+            || n.starts_with("customUI/");
         zmieniono |= makro;
         !makro
     });
@@ -862,6 +1018,14 @@ fn bez_makr(czesci: &mut Vec<(String, Vec<u8>)>) -> bool {
             );
             t2 = usun_elementy(&t2, "Override", &["vbaProject", "vbaData"]);
             t2 = usun_elementy(&t2, "Default", &["vbaProject"]);
+            t2 = usun_elementy(&t2, "Override", &["customUI"]);
+            if t2 != t {
+                zmieniono = true;
+                *b = t2.into_bytes();
+            }
+        } else if n == "_rels/.rels" {
+            let t = String::from_utf8_lossy(b).to_string();
+            let t2 = usun_elementy(&t, "Relationship", &["customUI", "ui/extensibility"]);
             if t2 != t {
                 zmieniono = true;
                 *b = t2.into_bytes();
@@ -897,7 +1061,8 @@ pub fn wypelnij(
         let tekst = String::from_utf8(std::mem::take(b))
             .map_err(|_| blad_pliku(format!("{n}: nieprawidłowe kodowanie")))?;
         let glowna = n == "word/document.xml";
-        let mut x = scal_pola(&tekst);
+        let mut x = kontrolki_tresci(&tekst, dane, &mut r, glowna);
+        x = scal_pola(&x);
         if glowna {
             if let Some(blok) = tylko {
                 x = tylko_blok(&x, blok)?;
@@ -1044,6 +1209,30 @@ mod testy {
         let typy = czesc(&wynik, "[Content_Types].xml");
         assert!(!typy.contains("macroEnabled") && !typy.contains("vbaProject"));
         assert!(rozpakuj(&wynik).unwrap().iter().all(|(n, _)| !n.contains("vba")));
+    }
+
+    #[test]
+    fn kontrolki_tresci_worda() {
+        let mut d = dane();
+        d.alias("number", "numer umowy");
+        d.pomin("uzupełnij");
+        let body = "<w:p><w:r><w:t>Umowa nr </w:t></w:r><w:sdt><w:sdtPr><w:alias w:val=\"numer umowy\"/><w:tag w:val=\"number\"/>\
+                    <w:dataBinding w:xpath=\"/rw:contract/rw:number\"/><w:text/></w:sdtPr><w:sdtContent><w:r><w:rPr><w:color w:val=\"FF3333\"/></w:rPr>\
+                    <w:t>[numer umowy]</w:t></w:r></w:sdtContent></w:sdt><w:r><w:t> [uzupełnij]</w:t></w:r></w:p>\
+                    <w:sdt><w:sdtPr><w:alias w:val=\"Spec\"/><w:tag w:val=\"specyfikacja\"/></w:sdtPr><w:sdtContent><w:p><w:r><w:t>[Uruchom makro]</w:t></w:r></w:p></w:sdtContent></w:sdt>\
+                    <w:sdt><w:sdtPr><w:tag w:val=\"cos\"/></w:sdtPr><w:sdtContent><w:p><w:r><w:t>x</w:t></w:r></w:p></w:sdtContent></w:sdt>";
+        let (wynik, r) = wypelnij(&dokument(body), &d, None).unwrap();
+        let doc = czesc(&wynik, "word/document.xml");
+        let t = tekst(&doc);
+        assert!(t.contains("Umowa nr 7/2027 [uzupełnij]"), "{t}");
+        assert!(t.contains("TABELA SPECYFIKACJI"), "{t}");
+        assert!(!doc.contains("dataBinding") && !t.contains("Uruchom"));
+        assert!(doc.contains("<w:color w:val=\"FF3333\"/></w:rPr><w:t xml:space=\"preserve\">7/2027"));
+        assert_eq!(r.kontrolki, 2);
+        assert_eq!(r.do_uzupelnienia, 1);
+        assert!(r.nieznane.is_empty(), "{:?}", r.nieznane);
+        assert!(doc.contains("<w:tag w:val=\"cos\"/>"), "nieznana kontrolka zostaje");
+        assert!(zrownowazony(&doc));
     }
 
     #[test]
