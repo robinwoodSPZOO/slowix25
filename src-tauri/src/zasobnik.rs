@@ -7,7 +7,7 @@ use tauri::{AppHandle, Manager, Runtime};
 pub const OKNO_GLOWNE: &str = "main";
 pub const OKNO_WIDZET: &str = "widzet";
 
-pub fn utworz<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+pub fn utworz(app: &AppHandle) -> tauri::Result<()> {
     let otworz = MenuItem::with_id(app, "otworz", "Otwórz ROBINWOOD", true, None::<&str>)?;
     let widzet = MenuItem::with_id(app, "widzet", "Pokaż / ukryj widżet", true, None::<&str>)?;
     let test = MenuItem::with_id(
@@ -33,7 +33,13 @@ pub fn utworz<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
                     tracing::warn!("Powiadomienie testowe nie powiodło się: {e}");
                 }
             }
-            "zakoncz" => app.exit(0),
+            // Najpierw interfejs zapisuje niezapisane wiersze, potem wychodzi (z zapasem czasu).
+            "zakoncz" => crate::po_zapisie_szkicow(
+                app,
+                "robinwood://przed-zakonczeniem",
+                std::time::Duration::from_secs(5),
+                |a| a.exit(0),
+            ),
             _ => {}
         })
         .on_tray_icon_event(|ikona, zdarzenie| {

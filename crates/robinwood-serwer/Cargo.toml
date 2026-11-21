@@ -28,7 +28,16 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 mdns-sd = "0.13"
 rand = "0.8"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# Eksport ofert (Faza 2)
+docx-rs = "0.4"
+genpdf = { version = "0.2", features = ["images"] }
+sha2 = "0.10"
+# Ta sama wersja crate'a image co w genpdf (obrazy do PDF i DOCX)
+image023 = { package = "image", version = "0.23", default-features = false, features = ["jpeg", "png"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+zip = { version = "8", default-features = false, features = ["deflate"] }
+# Odczyt tekstu z PDF w testach eksportu (ta sama wersja co w printpdf)
+lopdf = "0.26"

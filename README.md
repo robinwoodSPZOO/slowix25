@@ -9,7 +9,9 @@ Aplikacja na Windows dla firmy ROBINWOOD (meble na wymiar). Docelowo obejmuje:
 
 Jedna baza danych leży na komputerze-**serwerze** w sieci firmowej (Wi-Fi/LAN), pozostałe komputery (**klienci**) łączą się z nim. Nie ma chmury.
 
-> **Stan: Faza 0 – szkielet.** Działa: tryb serwer/klient, baza z pełnym schematem i migracjami, API (klienci – pełny CRUD, słowniki, kategorie materiałów, zdarzenia WebSocket), nawigacja po modułach, lista i karta klienta, ustawienia trybu pracy, wykrywanie serwera w sieci (mDNS), ikona w zasobniku, autostart, powiadomienie testowe, okno-widżet (bez danych). Pozostałe moduły to zaślepki. Wygląd jest tymczasowy – ekrany będą projektowane w Figmie.
+> **Stan: Faza 2 – Generator Ofert** (gałąź `faza-2-oferty`): specyfikacja mebli z edytorem (drzewo sekcji/części, tabela wierszy z klawiaturą i podpowiedziami, szablony mebli), oferty z wersjami, statusami i porównaniem wersji, wycena (poziom części/sekcji/całości, rabaty, VAT 8/23%, AGD osobno, marża wewnętrzna), zdjęcia, eksport PDF/DOCX, import słowników i szablonów z plików JSON, wspólne tokeny i komponenty interfejsu; po recenzji: autozapis i szkice, wykrywanie konfliktów dwóch stanowisk, zamrażanie wysłanych wersji, limity i odporność na przepełnienia, PDF z poprawnym łamaniem stron. Szczegóły: [docs/ARCHITEKTURA.md](docs/ARCHITEKTURA.md), rozdz. 7–9.
+>
+> **Faza 0 – szkielet.** Działa: tryb serwer/klient, baza z pełnym schematem i migracjami, API (klienci – pełny CRUD, słowniki, kategorie materiałów, zdarzenia WebSocket), nawigacja po modułach, lista i karta klienta, ustawienia trybu pracy, wykrywanie serwera w sieci (mDNS), ikona w zasobniku, autostart, powiadomienie testowe, okno-widżet (bez danych). Pozostałe moduły to zaślepki. Wygląd jest tymczasowy – ekrany będą projektowane w Figmie.
 
 > **Repozytorium jest publiczne.** Nie umieszczaj w nim danych klientów (nazwisk, adresów, numerów umów, kwot, treści umów i ofert), numerów kont ani haseł/kluczy. Dane trzyma wyłącznie baza na serwerze.
 

@@ -1,0 +1,163 @@
+/* Podstawowe komponenty interfejsu (src/ui/*.tsx). Korzystają wyłącznie z tokenów. */
+
+/* --- Przycisk --- */
+.przycisk {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--o-6);
+  height: var(--wys-pola);
+  padding: 0 var(--o-12);
+  border: 1px solid transparent;
+  border-radius: var(--r-6);
+  font: inherit;
+  font-size: var(--rozmiar-tekst);
+  font-weight: var(--waga-srednia);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.12s, border-color 0.12s, color 0.12s;
+}
+.przycisk:focus-visible { outline: none; box-shadow: var(--fokus); }
+.przycisk:disabled { cursor: not-allowed; opacity: 0.5; }
+.przycisk--maly { height: 26px; padding: 0 var(--o-8); font-size: var(--rozmiar-etykieta); gap: var(--o-4); }
+.przycisk--ikona { padding: 0; width: var(--wys-pola); }
+.przycisk--maly.przycisk--ikona { width: 26px; }
+.przycisk--glowny { background: var(--akcent); color: var(--tekst-na-akcencie); }
+.przycisk--glowny:hover:not(:disabled) { background: var(--akcent-hover); }
+.przycisk--glowny:active:not(:disabled) { background: var(--akcent-wcisniety); }
+.przycisk--drugorzedny { background: var(--tlo-powierzchni); color: var(--tekst); border-color: var(--linia-mocna); }
+.przycisk--drugorzedny:hover:not(:disabled) { background: var(--tlo-wyciszone); }
+.przycisk--tekstowy { background: transparent; color: var(--akcent); }
+.przycisk--tekstowy:hover:not(:disabled) { background: var(--akcent-jasny); }
+.przycisk--niebezpieczny { background: var(--tlo-powierzchni); color: var(--stan-czerwony); border-color: var(--stan-czerwony); }
+.przycisk--niebezpieczny:hover:not(:disabled) { background: var(--stan-czerwony-tlo); }
+
+/* --- Pole z etykietą --- */
+.pole { display: flex; flex-direction: column; gap: var(--o-4); min-width: 0; }
+.pole__etykieta { font-size: var(--rozmiar-etykieta); font-weight: var(--waga-srednia); color: var(--tekst-drugorzedny); }
+.pole__pomoc { font-size: var(--rozmiar-mikro); color: var(--tekst-wyciszony); }
+.pole__blad { display: flex; align-items: center; gap: var(--o-4); font-size: var(--rozmiar-mikro); color: var(--stan-czerwony); }
+.wejscie,
+.pole input:not([type="checkbox"]):not([type="radio"]),
+.pole select,
+.pole textarea {
+  height: var(--wys-pola);
+  padding: 0 var(--o-8);
+  border: 1px solid var(--linia-mocna);
+  border-radius: var(--r-6);
+  background: var(--tlo-powierzchni);
+  color: var(--tekst);
+  font: inherit;
+  font-size: var(--rozmiar-tekst);
+  min-width: 0;
+}
+.pole textarea { height: auto; padding: var(--o-6) var(--o-8); resize: vertical; }
+.wejscie:focus, .pole input:focus, .pole select:focus, .pole textarea:focus {
+  outline: none; border-color: var(--akcent); box-shadow: var(--fokus);
+}
+.wejscie:disabled, .pole input:disabled, .pole select:disabled, .pole textarea:disabled {
+  background: var(--tlo-wyciszone); color: var(--tekst-wyciszony); cursor: not-allowed;
+}
+.pole--blad input, .pole--blad select, .pole--blad textarea { border-color: var(--stan-czerwony); }
+.wejscie--kwota, .pole input.wejscie--kwota { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* --- Etykieta statusu (ikona + tekst, nigdy sam kolor) --- */
+.status {
+  display: inline-flex; align-items: center; gap: var(--o-4);
+  height: 22px; padding: 0 var(--o-8);
+  border-radius: var(--r-12);
+  font-size: var(--rozmiar-etykieta); font-weight: var(--waga-srednia);
+  white-space: nowrap;
+}
+.status svg { flex: none; }
+.status--spokojnie { color: var(--stan-spokojnie); background: var(--stan-spokojnie-tlo); }
+.status--zolty { color: var(--stan-zolty); background: var(--stan-zolty-tlo); }
+.status--pomaranczowy { color: var(--stan-pomaranczowy); background: var(--stan-pomaranczowy-tlo); }
+.status--czerwony { color: var(--stan-czerwony); background: var(--stan-czerwony-tlo); }
+.status--neutralny { color: var(--stan-neutralny); background: var(--stan-neutralny-tlo); }
+.status--akcent { color: var(--akcent); background: var(--akcent-jasny); }
+
+/* --- Tabela i wiersz tabeli --- */
+.tabela { width: 100%; border-collapse: separate; border-spacing: 0; font-size: var(--rozmiar-tabela); }
+.tabela th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--tlo-powierzchni-2);
+  text-align: left; font-size: var(--rozmiar-etykieta); font-weight: var(--waga-pogrubiona);
+  color: var(--tekst-drugorzedny);
+  padding: var(--o-6) var(--o-8);
+  border-bottom: 1px solid var(--linia);
+}
+.tabela td { padding: var(--o-6) var(--o-8); border-bottom: 1px solid var(--linia); vertical-align: middle; }
+.wiersz-tabeli--klikalny { cursor: pointer; }
+.wiersz-tabeli--klikalny:hover td { background: var(--tlo-powierzchni-2); }
+.wiersz-tabeli--zaznaczony td { background: var(--tlo-zaznaczenia); }
+.tabela .kolumna-kwoty { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* --- Element drzewa --- */
+.drzewo { list-style: none; margin: 0; padding: 0; }
+.element-drzewa {
+  display: flex; align-items: center; gap: var(--o-4);
+  min-height: 30px; padding: 0 var(--o-4) 0 calc(var(--o-8) + var(--poziom, 0) * 18px);
+  border-radius: var(--r-6);
+  cursor: pointer; user-select: none;
+  color: var(--tekst);
+}
+.element-drzewa:hover { background: var(--tlo-wyciszone); }
+.element-drzewa:focus-visible { outline: none; box-shadow: var(--fokus); }
+.element-drzewa--zaznaczony { background: var(--tlo-zaznaczenia); color: var(--akcent); font-weight: var(--waga-srednia); }
+.element-drzewa__przelacznik { display: inline-flex; width: 18px; justify-content: center; color: var(--tekst-wyciszony); flex: none; }
+.element-drzewa__etykieta { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.element-drzewa__licznik { font-size: var(--rozmiar-mikro); color: var(--tekst-wyciszony); }
+.element-drzewa__akcje { display: none; gap: var(--o-2); }
+.element-drzewa:hover .element-drzewa__akcje,
+.element-drzewa:focus-within .element-drzewa__akcje { display: inline-flex; }
+.element-drzewa:hover .element-drzewa__licznik,
+.element-drzewa:focus-within .element-drzewa__licznik { display: none; }
+
+/* --- Segment (przełącznik opcji) --- */
+.segment {
+  display: inline-flex; padding: var(--o-2); gap: var(--o-2);
+  background: var(--tlo-wyciszone); border-radius: var(--r-8);
+}
+.segment__opcja {
+  display: inline-flex; align-items: center; gap: var(--o-4);
+  height: 26px; padding: 0 var(--o-12);
+  border: 0; border-radius: var(--r-6);
+  background: transparent; color: var(--tekst-drugorzedny);
+  font: inherit; font-size: var(--rozmiar-etykieta); font-weight: var(--waga-srednia);
+  cursor: pointer; white-space: nowrap;
+}
+.segment__opcja:hover { color: var(--tekst); }
+.segment__opcja[aria-checked="true"] { background: var(--tlo-powierzchni); color: var(--akcent); box-shadow: var(--cien-1); }
+.segment__opcja:focus-visible { outline: none; box-shadow: var(--fokus); }
+.segment__opcja:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* --- Okno dialogowe --- */
+.okno-tlo { position: fixed; inset: 0; background: rgba(35, 33, 29, 0.4); display: grid; place-items: center; z-index: 50; }
+.okno {
+  background: var(--tlo-powierzchni); border-radius: var(--r-12); box-shadow: var(--cien-3);
+  width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 64px); display: flex; flex-direction: column;
+}
+.okno--szerokie { width: min(960px, calc(100vw - 32px)); }
+.okno__naglowek { display: flex; align-items: center; justify-content: space-between; padding: var(--o-16) var(--o-20); border-bottom: 1px solid var(--linia); }
+.okno__naglowek h2 { margin: 0; font-size: var(--rozmiar-h2); }
+.okno__tresc { padding: var(--o-16) var(--o-20); overflow: auto; display: flex; flex-direction: column; gap: var(--o-12); }
+.okno__stopka { display: flex; justify-content: flex-end; gap: var(--o-8); padding: var(--o-12) var(--o-20); border-top: 1px solid var(--linia); }
+
+/* --- Komunikat --- */
+.komunikat-stanu {
+  display: flex; align-items: flex-start; gap: var(--o-8);
+  padding: var(--o-8) var(--o-12); border-radius: var(--r-8);
+  font-size: var(--rozmiar-etykieta);
+}
+.komunikat-stanu svg { flex: none; margin-top: 1px; }
+
+/* Wspólne elementy modułów (wcześniej w oferty.css) */
+.karta { background: var(--tlo-powierzchni); border: 1px solid var(--linia); border-radius: var(--r-8); box-shadow: var(--cien-1); overflow: hidden; }
+.wejscie--maly { height: 26px; font-size: var(--rozmiar-etykieta); padding: 0 var(--o-6); }
+.naglowek-modulu { display: flex; align-items: center; justify-content: space-between; gap: var(--o-8); flex-wrap: wrap; }
+.naglowek-modulu h1 { margin: 0; }
+.naglowek-modulu__akcje { display: flex; gap: var(--o-8); flex-wrap: wrap; }
+.tabela-bledow { margin-top: var(--o-6); font-size: var(--rozmiar-etykieta); }
+.tabela-bledow td, .tabela-bledow th { padding: var(--o-4) var(--o-6); }

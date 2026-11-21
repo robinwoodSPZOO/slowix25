@@ -96,3 +96,20 @@ export async function autostart(): Promise<{ wlaczony: boolean; ustaw: (w: boole
     ustaw: async (w) => (w ? a.enable() : a.disable()),
   };
 }
+
+/**
+ * Tauri: przed schowaniem okna (krzyżyk) i przed „Zakończ” z zasobnika zapisujemy szkice
+ * edytorów, a dopiero potem okno jest chowane / program kończy działanie.
+ */
+export async function obsluzZamykanieOkna(oproznij: () => Promise<void>): Promise<void> {
+  if (!wTauri()) return;
+  const { listen } = await import("@tauri-apps/api/event");
+  await listen("robinwood://przed-zamknieciem", async () => {
+    await oproznij();
+    await invoke("ukryj_glowne_okno");
+  });
+  await listen("robinwood://przed-zakonczeniem", async () => {
+    await oproznij();
+    await invoke("zakoncz_aplikacje");
+  });
+}
