@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import przyklad from "../../../docs/przyklady/kategorie-materialow.csv?raw";
 import { parsujKategorieCsv, podzielCsv } from "./importCsv";
 
 describe("podzielCsv", () => {
   it("cudzysłowy, średnik i nowa linia w polu, CRLF, BOM, puste wiersze", () => {
-    const t = '﻿a;b\r\n"x;y";"z ""cyt"""\r\n\r\n"wiele\nlinii";2\n';
+    const t = '\uFEFFa;b\r\n"x;y";"z ""cyt"""\r\n\r\n"wiele\nlinii";2\n';
     expect(podzielCsv(t)).toEqual([
       { pola: ["a", "b"], wiersz: 1 },
       { pola: ["x;y", 'z "cyt"'], wiersz: 2 },
@@ -45,8 +45,7 @@ describe("parsujKategorieCsv", () => {
     expect(parsujKategorieCsv("kategoria,dostawca\nx,y").blad).toContain("średnik");
   });
   it("przykładowy plik z repozytorium (dane fikcyjne)", () => {
-    const t = readFileSync(new URL("../../../docs/przyklady/kategorie-materialow.csv", import.meta.url), "utf8");
-    const w = parsujKategorieCsv(t);
+    const w = parsujKategorieCsv(przyklad);
     expect(w.blad).toBeNull();
     expect(w.wiersze.length).toBeGreaterThan(5);
     expect(w.pominiete.length).toBeGreaterThan(0); // przykład celowo zawiera błędny wiersz

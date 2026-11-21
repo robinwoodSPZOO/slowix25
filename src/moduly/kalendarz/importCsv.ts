@@ -26,7 +26,7 @@ export function podzielCsv(tekst: string, separator = ";"): { pola: string[]; wi
   let wCudz = false;
   let nrWiersza = 1;
   let poczatekRekordu = 1;
-  const t = tekst.replace(/^﻿/, "");
+  const t = tekst.replace(/^\uFEFF/, "");
   for (let i = 0; i < t.length; i++) {
     const c = t[i];
     if (wCudz) {

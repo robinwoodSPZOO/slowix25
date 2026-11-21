@@ -1,0 +1,216 @@
+/* Kalendarz (Faza 4b): siatka, paski zadań, panel szczegółów, oś czasu, ustawienia.
+   Kolory typów wyłącznie przez --kolor ustawiane z tokenów --zadanie-* (src/lib/kolory.ts). */
+
+/* --- Pomocnicze (wspólne dla Kalendarza, Zamówień, Pulpitu i widżetu) --- */
+.stan-tlo--spokojnie { background: var(--stan-spokojnie-tlo); color: var(--stan-spokojnie); }
+.stan-tlo--zolty { background: var(--stan-zolty-tlo); color: var(--stan-zolty); }
+.stan-tlo--pomaranczowy { background: var(--stan-pomaranczowy-tlo); color: var(--stan-pomaranczowy); }
+.stan-tlo--czerwony { background: var(--stan-czerwony-tlo); color: var(--stan-czerwony); }
+.stan-tlo--neutralny { background: var(--tlo-powierzchni); color: var(--tekst-drugorzedny); border: 1px solid var(--linia); }
+.komunikat-stanu a, .komunikat-stanu .link { color: inherit; font-weight: var(--waga-pogrubiona); }
+.komunikat-stanu { font-size: var(--rozmiar-etykieta); line-height: 1.45; }
+.link { background: none; border: 0; padding: 0; font: inherit; color: var(--akcent); text-decoration: underline; cursor: pointer; }
+.link:focus-visible { outline: none; box-shadow: var(--fokus); border-radius: 2px; }
+.tekst-drugorzedny { color: var(--tekst-drugorzedny); font-size: var(--rozmiar-etykieta); }
+.obrot { animation: obrot 1s linear infinite; color: var(--tekst-wyciszony); }
+@keyframes obrot { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .obrot { animation: none; } }
+.pola-obok { display: grid; grid-template-columns: 1fr 1fr; gap: var(--o-8); }
+.formularz-siatka { display: grid; grid-template-columns: 1fr 1fr; gap: var(--o-12); }
+.formularz-siatka .pole--szerokie { grid-column: 1 / -1; }
+.potwierdzenie { display: flex; flex-wrap: wrap; align-items: center; gap: var(--o-6); font-size: var(--rozmiar-etykieta); padding: var(--o-6) var(--o-8); background: var(--stan-czerwony-tlo); border-radius: var(--r-6); }
+.przycisk:focus-visible, a.przycisk:focus-visible { outline: none; box-shadow: var(--fokus); }
+a.przycisk { text-decoration: none; }
+
+.znacznik-typu { display: inline-flex; align-items: center; gap: var(--o-4); font-size: var(--rozmiar-etykieta); color: var(--tekst); white-space: nowrap; }
+.znacznik-typu__ikona {
+  display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: var(--r-4);
+  background: var(--kolor); color: #fff; flex: none;
+}
+.ikona-stanu { display: inline-flex; flex: none; }
+.ikona-stanu--zolty { color: var(--stan-zolty); }
+.ikona-stanu--pomaranczowy { color: var(--stan-pomaranczowy); }
+.ikona-stanu--czerwony { color: var(--stan-czerwony); }
+.ikona-stanu--wykonane { color: var(--tekst-wyciszony); }
+.ikona-stanu--spokojnie { color: var(--stan-spokojnie); }
+
+/* --- Układ widoku --- */
+.kalendarz { display: flex; flex-direction: column; gap: var(--o-8); height: calc(100vh - 40px); min-height: 560px; }
+.kalendarz__naglowek { display: flex; align-items: center; flex-wrap: wrap; gap: var(--o-8) var(--o-16); }
+.kalendarz__naglowek h1 { margin: 0; }
+.kalendarz__nawigacja { display: flex; align-items: center; gap: var(--o-6); }
+.kalendarz__okres { margin: 0 0 0 var(--o-8); font-size: var(--rozmiar-h2); min-width: 15ch; }
+.kalendarz__okres::first-letter { text-transform: uppercase; }
+.kalendarz__akcje { display: flex; align-items: center; gap: var(--o-8); margin-left: auto; flex-wrap: wrap; }
+.kalendarz__glowna { flex: 1; min-height: 0; display: flex; gap: var(--o-12); }
+.kalendarz__glowna > .siatka { flex: 1; min-width: 0; }
+.pusty-kalendarz { max-width: 980px; }
+
+/* --- Filtry --- */
+.filtry-kalendarza {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--o-8) var(--o-16);
+  padding: var(--o-8) var(--o-12); background: var(--tlo-powierzchni); border: 1px solid var(--linia); border-radius: var(--r-8);
+}
+.filtry-kalendarza__typy { display: flex; flex-wrap: wrap; gap: var(--o-4); }
+.przelacznik-typu {
+  display: inline-flex; align-items: center; gap: var(--o-4); height: 26px; padding: 0 var(--o-8);
+  border-radius: var(--r-12); border: 1px solid var(--linia-mocna); background: var(--tlo-powierzchni);
+  font: inherit; font-size: var(--rozmiar-etykieta); color: var(--tekst-wyciszony); cursor: pointer;
+}
+.przelacznik-typu svg { color: var(--kolor); }
+.przelacznik-typu--wl { color: var(--tekst); border-color: var(--kolor); }
+.przelacznik-typu[aria-pressed="true"] { background: color-mix(in srgb, var(--kolor) 14%, white); box-shadow: inset 0 0 0 1px var(--kolor); }
+.przelacznik-typu:focus-visible { outline: none; box-shadow: var(--fokus); }
+.filtry-kalendarza__pole { display: inline-flex; align-items: center; gap: var(--o-6); font-size: var(--rozmiar-etykieta); color: var(--tekst-drugorzedny); }
+.filtry-kalendarza__pole select { max-width: 220px; }
+
+/* --- Legenda --- */
+.legenda-kalendarza { display: flex; flex-wrap: wrap; align-items: center; gap: var(--o-6) var(--o-20); font-size: var(--rozmiar-etykieta); color: var(--tekst-drugorzedny); }
+.legenda-kalendarza__grupa { display: inline-flex; flex-wrap: wrap; gap: var(--o-6) var(--o-12); }
+.legenda-kalendarza__okno { display: inline-flex; align-items: center; gap: var(--o-4); }
+.legenda-kalendarza__pasek {
+  position: relative; display: inline-block; width: 52px; height: 12px; border-radius: 3px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--kolor) 16%, white) 0 55%, color-mix(in srgb, var(--kolor) 42%, white) 55% 100%);
+  border-left: 3px solid var(--kolor); color: var(--kolor);
+}
+.legenda-kalendarza__pasek svg { position: absolute; left: 55%; top: 1px; transform: translateX(-50%); fill: currentColor; }
+.legenda-kalendarza svg { flex: none; }
+
+/* --- Siatka --- */
+.siatka { display: flex; flex-direction: column; background: var(--tlo-powierzchni); border: 1px solid var(--linia); border-radius: var(--r-8); overflow: hidden; }
+.siatka__dni-tygodnia { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); border-bottom: 1px solid var(--linia); background: var(--tlo-powierzchni-2); }
+.siatka__dni-tygodnia > div { padding: var(--o-4) var(--o-8); font-size: var(--rozmiar-etykieta); font-weight: var(--waga-pogrubiona); color: var(--tekst-drugorzedny); }
+.siatka__dni-tygodnia > .weekend { color: var(--tekst-wyciszony); }
+.siatka__tygodnie { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.siatka--tydzien .siatka__tygodnie { overflow: auto; }
+.siatka--miesiac .tydzien { flex: 1 1 0; min-height: 0; overflow: hidden; }
+.siatka--tydzien .tydzien { flex: 1 0 auto; }
+
+.tydzien {
+  position: relative; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-rows: var(--wys-naglowka-dnia) repeat(var(--torow), calc(var(--wys-toru) + 2px)) var(--wiecej);
+  align-content: start; border-bottom: 1px solid var(--linia);
+}
+.tydzien:last-child { border-bottom: 0; }
+.komorka {
+  grid-row: 1 / -1; min-height: 100%; border-right: 1px solid var(--linia); position: relative;
+  outline: none; min-width: 0;
+}
+.siatka--miesiac .komorka { grid-row: 1 / span 999; }
+.komorka:nth-child(7) { border-right: 0; }
+.komorka--weekend { background: var(--tlo-powierzchni-2); }
+.komorka--swieto, .komorka--wolny {
+  background: repeating-linear-gradient(135deg, var(--tlo-wyciszone) 0 6px, var(--tlo-powierzchni-2) 6px 12px);
+}
+.komorka--poza .komorka__numer { color: var(--tekst-wyciszony); font-weight: var(--waga-normalna); }
+.komorka--poza { background-color: var(--tlo-powierzchni-2); }
+.komorka--dzis { box-shadow: inset 0 0 0 2px var(--akcent); }
+.komorka:focus-visible { box-shadow: inset 0 0 0 3px rgba(45, 94, 80, 0.55); }
+.komorka--dzis:focus-visible { box-shadow: inset 0 0 0 2px var(--akcent), inset 0 0 0 4px rgba(45, 94, 80, 0.35); }
+.komorka__naglowek { display: flex; align-items: center; gap: var(--o-4); height: var(--wys-naglowka-dnia); padding: 0 var(--o-4); min-width: 0; }
+.komorka__numer {
+  border: 0; background: none; font: inherit; font-size: var(--rozmiar-etykieta); font-weight: var(--waga-pogrubiona);
+  color: var(--tekst); min-width: 22px; height: 20px; padding: 0 var(--o-4); border-radius: 10px; cursor: pointer; flex: none;
+}
+.komorka__numer:hover { background: var(--tlo-wyciszone); }
+.komorka--dzis .komorka__numer { background: var(--akcent); color: var(--tekst-na-akcencie); }
+.komorka__swieto { font-size: var(--rozmiar-mikro); color: var(--stan-czerwony); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-weight: var(--waga-srednia); }
+.komorka--wolny:not(.komorka--swieto) .komorka__swieto { color: var(--tekst-drugorzedny); }
+
+/* --- Pasek zadania --- */
+.pasek {
+  position: relative; z-index: 1; align-self: center; display: flex; align-items: center; gap: var(--o-4);
+  height: var(--wys-toru); margin: 1px 3px; padding: 0 var(--o-4) 0 var(--o-4); min-width: 0;
+  border: 0; border-left: 3px solid var(--kolor); border-radius: var(--r-4);
+  background: color-mix(in srgb, var(--kolor) 15%, white); color: var(--tekst);
+  font: inherit; font-size: var(--rozmiar-etykieta); text-align: left; cursor: pointer; overflow: hidden;
+}
+.pasek:hover { background: color-mix(in srgb, var(--kolor) 24%, white); }
+.pasek:focus-visible { outline: none; box-shadow: var(--fokus); z-index: 2; }
+.pasek--z-lewej { border-left-style: dashed; border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: 0; }
+.pasek--w-prawo { border-top-right-radius: 0; border-bottom-right-radius: 0; margin-right: 0; }
+.pasek--okno {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--kolor) 14%, white) 0 var(--planowa, 50%), color-mix(in srgb, var(--kolor) 34%, white) var(--planowa, 50%) 100%);
+}
+.pasek--okno:hover { filter: brightness(0.96); }
+.pasek__ikona { display: inline-flex; color: var(--kolor); flex: none; filter: saturate(1.2) brightness(0.8); }
+.pasek__tekst { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.2; }
+.pasek__tytul { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pasek__opis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--rozmiar-mikro); color: var(--tekst-drugorzedny); }
+.pasek__znak { display: inline-flex; flex: none; color: var(--tekst-drugorzedny); }
+.pasek__ciag { flex: none; color: var(--tekst-drugorzedny); }
+.pasek__planowa {
+  position: absolute; top: -1px; transform: translateX(-50%); color: var(--kolor); pointer-events: none;
+  filter: brightness(0.7);
+}
+.pasek__planowa svg { fill: currentColor; }
+.pasek--stan-zolty { box-shadow: inset 0 0 0 1px var(--stan-zolty); }
+.pasek--stan-pomaranczowy { box-shadow: inset 0 0 0 2px var(--stan-pomaranczowy); }
+.pasek--stan-czerwony { box-shadow: inset 0 0 0 2px var(--stan-czerwony); background: var(--stan-czerwony-tlo); }
+.pasek--stan-czerwony.pasek--okno { background: linear-gradient(90deg, var(--stan-czerwony-tlo), color-mix(in srgb, var(--stan-czerwony) 22%, white)); }
+.pasek--wykonane { opacity: 0.6; }
+.pasek--wykonane .pasek__tytul { text-decoration: line-through; text-decoration-color: var(--tekst-wyciszony); }
+.pasek--nieaktualny { outline: 1px dashed var(--stan-pomaranczowy); outline-offset: -1px; }
+.pasek--wybrany { box-shadow: 0 0 0 2px var(--tekst); z-index: 2; }
+.siatka--tydzien .pasek { align-items: center; font-size: var(--rozmiar-tabela); }
+.siatka--tydzien .pasek__tytul { font-weight: var(--waga-srednia); }
+
+.tydzien__wiecej {
+  position: relative; z-index: 1; align-self: start; justify-self: start; margin: 0 4px; padding: 0 var(--o-4);
+  height: 16px; border: 0; background: none; font: inherit; font-size: var(--rozmiar-mikro); font-weight: var(--waga-pogrubiona);
+  color: var(--akcent); cursor: pointer; border-radius: var(--r-4);
+}
+.tydzien__wiecej:hover { background: var(--akcent-jasny); }
+
+/* --- Lista dnia --- */
+.lista-dnia { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--o-4); }
+.lista-dnia__pozycja {
+  display: flex; align-items: center; gap: var(--o-8); width: 100%; padding: var(--o-6) var(--o-8);
+  border: 1px solid var(--linia); border-left: 4px solid var(--kolor); border-radius: var(--r-6);
+  background: var(--tlo-powierzchni); font: inherit; text-align: left; cursor: pointer;
+}
+.lista-dnia__pozycja:hover { background: var(--tlo-powierzchni-2); }
+.lista-dnia__pozycja:focus-visible { outline: none; box-shadow: var(--fokus); }
+.lista-dnia__ikona { color: var(--kolor); display: inline-flex; filter: brightness(0.85); }
+.lista-dnia__tekst { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.lista-dnia__tekst strong { font-weight: var(--waga-srednia); font-size: var(--rozmiar-tabela); }
+.lista-dnia__tekst span { font-size: var(--rozmiar-mikro); color: var(--tekst-drugorzedny); }
+
+/* --- Panel zadania --- */
+.panel-zadania {
+  width: var(--szer-panelu); flex: none; overflow: auto; background: var(--tlo-powierzchni);
+  border: 1px solid var(--linia); border-top: 4px solid var(--kolor); border-radius: var(--r-8);
+  padding: var(--o-12) var(--o-16); display: flex; flex-direction: column; gap: var(--o-8);
+}
+.panel-zadania__naglowek { display: flex; align-items: center; justify-content: space-between; }
+.panel-zadania__typ { display: inline-flex; align-items: center; gap: var(--o-6); font-size: var(--rozmiar-etykieta); font-weight: var(--waga-pogrubiona); color: var(--tekst-drugorzedny); }
+.panel-zadania__typ svg { color: var(--kolor); }
+.panel-zadania__reczne { font-weight: var(--waga-normalna); }
+.panel-zadania h2 { margin: 0; font-size: var(--rozmiar-h3); line-height: 1.35; outline: none; }
+.panel-zadania__stan { display: flex; align-items: center; gap: var(--o-8); }
+.panel-zadania__opis { margin: 0; font-size: var(--rozmiar-tabela); color: var(--tekst-drugorzedny); }
+.panel-zadania__dane { display: grid; grid-template-columns: auto 1fr; gap: var(--o-4) var(--o-12); margin: var(--o-4) 0; font-size: var(--rozmiar-tabela); }
+.panel-zadania__dane dt { color: var(--tekst-drugorzedny); }
+.panel-zadania__dane dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.panel-zadania__akcje { display: flex; flex-direction: column; gap: var(--o-8); padding-top: var(--o-8); border-top: 1px solid var(--linia); }
+.panel-zadania__akcje form { display: flex; flex-direction: column; gap: var(--o-8); align-items: flex-start; }
+.panel-zadania__akcje .pola-obok { width: 100%; }
+.panel-zadania__reczne-akcje { display: flex; flex-wrap: wrap; gap: var(--o-4); }
+@media (max-width: 1500px) { .panel-zadania { width: 340px; } }
+
+.pasek-okna { margin: var(--o-4) 0; }
+.pasek-okna__tor {
+  position: relative; height: 10px; border-radius: 5px; margin: 0 6px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--kolor) 20%, white), color-mix(in srgb, var(--kolor) 60%, white));
+  border: 1px solid var(--kolor);
+}
+.pasek-okna__znacznik { position: absolute; top: -4px; width: 12px; height: 12px; transform: translateX(-50%) rotate(45deg); background: var(--kolor); border: 2px solid #fff; filter: brightness(0.8); }
+.pasek-okna__podpisy { display: flex; justify-content: space-between; margin-top: var(--o-6); font-size: var(--rozmiar-mikro); color: var(--tekst-drugorzedny); }
+.pasek-okna__podpisy span:nth-child(2) { text-align: center; }
+.pasek-okna__podpisy span:last-child { text-align: right; }
+.pasek-okna__podpisy strong { color: var(--tekst); font-size: var(--rozmiar-etykieta); }
+
+@media (max-width: 1400px) {
+  .kalendarz__okres { min-width: 0; }
+  .legenda-kalendarza { gap: var(--o-4) var(--o-12); }
+}
