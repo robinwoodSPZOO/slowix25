@@ -1,6 +1,6 @@
 # Architektura programu ROBINWOOD
 
-Dokument dla kolejnych agentów i programistów. Stan: Faza 0 (szkielet) + Faza 2 (Generator Ofert, rozdz. 7–9).
+Dokument dla kolejnych agentów i programistów. Stan: gałąź `integracja-1` = Faza 0 (szkielet) + Faza 2 (Generator Ofert z poprawkami po recenzji, rozdz. 7–9) + Faza 4a (silnik terminów, rozdz. 10). Wspólne konwencje błędów, transakcji i migracji: rozdz. 3–5.
 
 ## 1. Stos
 
@@ -64,15 +64,25 @@ Konwencje: nazwy po polsku bez polskich znaków; kwoty w **groszach** (`*_gr`, I
 
 Migracja `0002_oferty_specyfikacja.sql` (Faza 2) dodaje: `ident` w sekcjach/częściach/wierszach (stały identyfikator przenoszony przy kopiowaniu – po nim porównujemy wersje), `wiersze_specyfikacji.cena_gr` (cena jednostkowa pozycji AGD) i `material_z_korpusu` (materiał wypełniony automatycznie), `wersje_oferty.adres_inwestycji`, `tryb_cen` (brutto/netto), `zmieniono`, `pozycje_slownika.podgrupa` i `zrodlo`, tabelę `szablony_mebli`, słowniki `material`, `dekor`, `opis`, `agd`, `agd_marka`, `jednostka`, ogólne klauzule końcowe oraz klucze ustawień `firma_*` i `oferta_*`. **Uwaga:** `wersje_oferty.klauzule` przechowuje JSON z listą **treści** klauzul (kopia w chwili tworzenia wersji), nie identyfikatorów.
 
+**Migracje** (jednoznaczna, rosnąca numeracja dla nowej bazy; test `tests/integracja.rs::migracje_na_pustej_bazie_i_spojny_schemat` sprawdza kolejność 0001…000N bez luk, `PRAGMA foreign_key_check` i poprawność kluczy obcych):
+
+| Nr | Plik | Gałąź | Zawartość |
+| --- | --- | --- | --- |
+| 0001 | `0001_schemat_poczatkowy.sql` | Faza 0 | cały schemat (nie zmieniać) |
+| 0002 | `0002_oferty_specyfikacja.sql` | Faza 2 | `ident`, ceny AGD, szablony mebli, słowniki, dane firmy |
+| 0003 | `0003_silnik_terminow.sql` | Faza 4a | `zadania_kalendarza.klucz`, migawka terminów w `zamowienia_materialow`, ustawienia odstępów |
+| 0004 | `0004_silnik_terminow_poprawki.sql` | Faza 4a | `zlecenia.harmonogram_nieaktualny_powod`, `dziennik_zmian.opis`, indeksy dat |
+| 0005 | `0005_oferty_poprawki.sql` | Faza 2 (poprawki) | `wersja`/`zmieniono` rekordów specyfikacji i wersji oferty, `wersje_oferty.migawka`/`wyslano`, podglądy plików, AGD 23% |
+
+Kolejne migracje: `0006_…` itd. Program nie ma jeszcze wdrożeń, więc bazy deweloperskie sprzed integracji należy odtworzyć.
+
 Kluczowa decyzja: **specyfikacja jest osobnym obiektem**, do którego wskazuje wersja oferty, umowa i aneks. Przejście oferta → umowa = skopiowanie specyfikacji (`specyfikacje.zrodlo_id` pamięta źródło), co pozwala pokazać różnice.
 
 ## 4. API
 
 Prefiks `/api/v1`. **Błędy: zawsze JSON `{ "blad": "komunikat po polsku" }`** (401/404/409/413/422/500/503), także dla błędów spoza kodu tras (nieznana trasa, zła metoda, za duża treść, błędny JSON) – patrz rozdz. 5, zasady 11–12. Dodatkowe pola: `kod` (`konflikt`, `bledy_pozycji`, `zajety`), `konflikty` + `aktualny` (409), `bledy: [{pozycja, pole, powod}]` (422 importu).
 
-Prefiks `/api/v1`. Błędy: JSON `{ "blad": "komunikat po polsku" }` z kodem 401/404/409/422/500 (409 – operacja
-wymaga jawnego potwierdzenia, patrz 7.4; trasy kalendarza zwracają też błędy deserializacji treści, ścieżki i
-parametrów jako 422 w tym formacie).
+Kody 409: `konflikt` (równoczesna edycja tego samego pola – zmiany częściowe, rozdz. 4 niżej) i `do_potwierdzenia` (zamówienie materiału zablokowanego wierszami „do potwierdzenia” bez `mimo_blokady`, rozdz. 10.4). 503 `zajety` – baza chwilowo zajęta (ponów).
 
 | Metoda i ścieżka | Opis |
 | --- | --- |
@@ -83,7 +93,8 @@ parametrów jako 422 w tym formacie).
 | `GET /slowniki`, `GET /slowniki/{kod}` | słowniki i ich pozycje |
 | `GET /kategorie-materialow` | kategorie z widełkami dostaw |
 | `GET /zdarzenia?klucz=` | WebSocket: `{"zasob":"klienci","id":1,"operacja":"zmiana"}`; `zasob:"*"` = odśwież wszystko |
-| Kalendarz, zlecenia, materiały, czasy dostaw | patrz rozdz. 7 „Silnik terminów” |
+| `POST /klienci/{id}/przywroc` | cofnięcie usunięcia (miękkiego) klienta |
+| Kalendarz, zlecenia, materiały, czasy dostaw | patrz rozdz. 10 „Silnik terminów” |
 
 Faza 2 (trasy w `crates/robinwood-serwer/src/api_oferty.rs`, dołączone do routera jedną linią w `api.rs`):
 
@@ -102,7 +113,6 @@ Faza 2 (trasy w `crates/robinwood-serwer/src/api_oferty.rs`, dołączone do rout
 | `POST /specyfikacje/{id}/zdjecia?sekcja_id=&czesc_id=&nazwa=&podpis=` | treść = bajty JPG/PNG (≤ 20 MB) → 201 |
 | `PUT/DELETE /zdjecia/{id}`, `GET /pliki/{id}?podglad=1` | podpis, odpięcie; plik albo pomniejszony podgląd JPEG (klucz tylko w nagłówku – interfejs pobiera obrazki przez `fetch` i `blob:`) |
 | `GET /oferty?status=&klient_id=&szukaj=&limit=&od=`, `POST /oferty` | lista (najnowsza wersja + suma brutto lub `blad_wyceny`, `klient_usuniety`; stała liczba zapytań, domyślnie 200 pozycji), nowa oferta z v1 |
-| `POST /klienci/{id}/przywroc` | cofnięcie usunięcia klienta |
 | `GET/PUT/DELETE /oferty/{id}`, `PUT /oferty/{id}/status` | szczegóły, zmiana inwestora, usunięcie, status |
 | `POST /oferty/{id}/wersje` `{z_wersji_id?}` | nowa wersja = kopia (specyfikacja + parametry) |
 | `GET /oferty/{id}/porownanie?z=&do=` | różnice między wersjami |
@@ -135,19 +145,19 @@ Wszystkie zmiany specyfikacji zwracają `{id, specyfikacja}` – całe aktualne 
 3. Zmiany schematu **tylko nowymi migracjami** `000N_opis.sql`; nigdy nie edytuj migracji już wypuszczonej (sqlx sprawdza sumy kontrolne).
 4. Nowy moduł interfejsu = folder w `src/moduly/` + wpis w `src/moduly/rejestr.tsx`.
 5. Pieniądze w groszach (`formatujKwote`, `parsujKwote` w `src/lib/formaty.ts`), daty w ISO, wyświetlanie `DD.MM.RRRR`.
-6. Kolory typów zadań: tokeny `--zadanie-montaz/-warsztat/-zamowienie/-rysunki/-pomiar` w `src/ui/tokeny.css` (montaż #0072B2, warsztat #8A5A2B, zamówienie #00896A, rysunki #B8578F, pomiar #2B8FCB). Są zarezerwowane – nie używać ich do niczego innego. `src/lib/kolory.ts` z Fazy 0 ma jeszcze stare wartości – do podmiany przez moduł Kalendarz.
+6. Kolory typów zadań: tokeny `--zadanie-montaz/-warsztat/-zamowienie/-rysunki/-pomiar` (+ pomocnicze `-platnosc/-klient/-inne`) w `src/ui/tokeny.css` (montaż #0072B2, warsztat #8A5A2B, zamówienie #00896A, rysunki #B8578F, pomiar #2B8FCB). Są zarezerwowane – nie używać ich do niczego innego. `src/lib/kolory.ts` mapuje `zadania_kalendarza.typ` na te zmienne.
 7. Wygląd: tokeny i podstawowe komponenty w `src/ui/` (rozdz. 9). Nowe ekrany składamy z nich; statusy i stany zawsze ikoną + tekstem (lucide-react).
 8. Interfejs i komunikaty po polsku.
 9. **Repozytorium jest publiczne**: żadnych danych klientów, przykładowych umów/ofert z prawdziwymi danymi, numerów kont, kluczy API. Dane testowe – wyłącznie fikcyjne („Klient Testowy”, `example.com`). Generowanie DOCX z szablonu umowy: szablon z danymi firmy trzymać poza repo (np. w folderze danych serwera) albo upewnić się, że nie zawiera danych wrażliwych.
+10. Przed commitem: `npm run typecheck && npm run lint && npm test && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`.
 11. **Transakcje zapisu**: każdą transakcję, która cokolwiek zapisuje, otwieraj przez `baza::transakcja_zapisu(&pula)` (`BEGIN IMMEDIATE`). Zwykłe `pula.begin()` (DEFERRED: odczyt → zapis) w trybie WAL kończy się natychmiastowym „database is locked” przy równoczesnych zapisach z kilku stanowisk. Pilnuje tego test `tests/spojnosc_kodu.rs`; test równoległości na pliku bazy: `tests/api_oferty_poprawki.rs::rownolegle_zapisy_bez_database_is_locked`.
 12. **Wejście i błędy**: w trasach używaj ekstraktorów `crate::wejscie::{Cialo, Sciezka, Parametry, Tresc}` (błędy JSON, ścieżki, parametrów i limitu rozmiaru → `{"blad"}` po polsku), a błędy zwracaj jako `BladApi`. Warstwa `bledy::ujednolic_bledy` zamienia każdą inną odpowiedź błędu na JSON i dodaje `X-Content-Type-Options: nosniff`. Limity danych: `limity.rs`.
-10. Przed commitem: `npm run typecheck && npm run lint && npm test && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`.
 
 ## 6. Otwarte kwestie
 
 * Decyzje użytkownika z planu (rozdz. 10): punkt odniesienia zamówień, dni robocze czy kalendarzowe (ustawienie `liczenie_dni`, domyślnie „robocze”), lista kategorii z czasami dostaw, format numeracji umów (przyjęto `NN/RRRR`).
 * Kopie zapasowe bazy (nocna kopia `VACUUM INTO` na drugi dysk / do chmury) – do zrobienia w fazie „Sieć”.
-* Przechowywanie plików: zrobione dla zdjęć (Faza 2, `pliki.rs`); do dołożenia sprzątanie plików bez odwołań i kopia zapasowa folderu `pliki/` razem z bazą.
+* Przechowywanie plików: zdjęcia z podglądami i sprzątaniem plików bez odwołań (`pliki.rs`); do dołożenia kopia zapasowa folderu `pliki/` razem z bazą.
 * Uprawnienia użytkowników (np. koszt własny widoczny tylko dla właściciela) – obecnie jeden wspólny klucz dla wszystkich stanowisk; API wyceny zwraca marżę każdemu stanowisku, a interfejs chowa ją w rozwijanym „panelu wewnętrznym”.
 * Podpisywanie instalatora certyfikatem (bez niego Windows SmartScreen ostrzega przy instalacji) i automatyczne aktualizacje (`tauri-plugin-updater`).
 * Szyfrowanie ruchu w sieci (TLS) – patrz rozdz. 2.
@@ -221,7 +231,9 @@ import { EdytorSpecyfikacji } from "../specyfikacja";
 
 * Edytor sam pobiera podpowiedzi (`/slowniki-podpowiedzi`) i szablony; rozmawia wyłącznie z API specyfikacji, więc działa dla każdej specyfikacji (umowa, aneks).
 * Umowa z oferty: po stronie serwera skopiuj specyfikację wersji oferty funkcją `specyfikacje::kopiuj_specyfikacje_w(&mut tx, wersja.specyfikacja_id)` – zachowa `ident`, więc `roznice::porownaj_specyfikacje(&oferta, &umowa)` pokaże różnice oferta ↔ umowa (i umowa ↔ aneks).
-* Blokada zapisu: `specyfikacje::sprawdz_zapis` blokuje dziś starsze wersje oferty; dla podpisanej umowy dopisz tam warunek (np. `umowy.status != 'szkic'`) – edytor pokaże wtedy tryb tylko do odczytu po `tylko_do_odczytu`.
+* Blokada zapisu: `specyfikacje::wlasciciel` zna już wersje ofert, **umowy i aneksy** (umowa/aneks poza statusem `szkic` → tylko do odczytu z powodem w `wlasciciel.powod_blokady`); edytor pokazuje powód i opcjonalną akcję (`akcjaBlokady`, np. „Utwórz aneks”). Zdarzenia po zmianie specyfikacji idą do zasobu właściciela (`umowy`) oraz `zlecenia`/`zadania_kalendarza`.
+* Zapis szkiców przy zamykaniu okna: edytor rejestruje się w `src/lib/szkice.ts` – nic więcej nie trzeba robić; inne formularze (np. umowy) mogą zarejestrować własne `oproznij`.
+* Zdjęcia: `PanelZdjec` i `useObrazek` z `src/moduly/specyfikacja` (obrazki przez `api.pobierzPlik` → `blob:`).
 * Wycena umowy może użyć `wycena::wylicz` (ta sama struktura sekcji/części) i `oferty::wycen` jako wzorca mapowania.
 * Eksport umowy: model `eksport::DokumentOferty` i renderery są przykładem; tabelę specyfikacji (sekcja → część → wiersze) warto wydzielić, gdy powstanie dokument umowy.
 
@@ -236,18 +248,16 @@ Klawiatura w tabeli: Tab/Shift+Tab – komórki (Tab w ostatniej komórce ostatn
 * Statusy oferty: `src/moduly/oferty/statusy.ts`; statusy wiersza: ikony w `IKONY_STATUSU` (edytor specyfikacji).
 * Ekran oferty: trzy kolumny (drzewo | tabela | panel); szerokości drzewa i panelu zależą od szerokości edytora (**container queries**, `clamp(…cqi…)`), a nie od szerokości okna – przy skalowaniu Windows 125% (1536×864 CSS) tabela zachowuje Opis ≥ 200 px i pełne nazwy statusów. Drzewo i panel można zwinąć (przyciski nad tabelą, pamiętane w localStorage); poniżej 1440 px szerokości okna panel startuje zwinięty. Sprawdzone zrzutami przy 1920×1080, 1536×864 (125%), 1366×768 i 1280×720. Wspólne zdjęcia: `src/moduly/specyfikacja/PanelZdjec.tsx`, okno konfliktu `OknoKonfliktu.tsx`.
 
-## 7. Silnik terminów (Faza 4a)
+## 10. Silnik terminów (Faza 4a)
 
 Kod: `crates/robinwood-serwer/src/kalendarz/` (czysta logika, bez bazy i HTTP, testy jednostkowe),
 `src/terminarz.rs` (baza), `src/api_kalendarz.rs` (trasy), migracje `0003_silnik_terminow.sql` i
-`0004_silnik_terminow_poprawki.sql` (znacznik `zlecenia.harmonogram_nieaktualny_powod`, `dziennik_zmian.opis`,
-indeksy zakresów dat). Migracja 0003 została poprawiona w miejscu (`INSERT OR IGNORE` dla ustawień) – nie była
-jeszcze nigdzie wdrożona; baza deweloperska z wcześniejszą wersją 0003 wymaga odtworzenia (sqlx sprawdza sumy
-kontrolne).
+`0004_silnik_terminow_poprawki.sql` (patrz rozdz. 3 „Migracje”). Transakcje zapisu – `baza::transakcja_zapisu`
+(rozdz. 5, zasada 11); przeliczenie z punktem zapisu (`SAVEPOINT`) wewnątrz tej transakcji.
 
-### 7.1. Reguły (liczone wstecz od terminu montażu z umowy)
+### 10.1. Reguły (liczone wstecz od terminu montażu z umowy)
 
-| Krok | Wzór (`wstecz(D, N)` – patrz 7.2) |
+| Krok | Wzór (`wstecz(D, N)` – patrz 10.2) |
 | --- | --- |
 | Montaż | od `montaz_od`, trwa `czas_montazu_dni` (≥ 1); ostatni dzień = N-ty dzień od startu włącznie |
 | Składanie na warsztacie | `warsztat_od = wstecz(montaz_od, czas_warsztat_dni)`, `warsztat_do = wstecz(montaz_od, 1)` (czas 0 → brak zadania, ostrzeżenie) |
@@ -257,7 +267,7 @@ kontrolne).
 | Pomiar końcowy | `wstecz(rysunki, odstep_pomiar)` |
 | Potwierdzenie terminu montażu klientowi | `wstecz(montaz_od, odstep_potwierdzenie_montazu_dni)` (7), typ `klient` |
 | Pomieszczenie gotowe | `wstecz(montaz_od, odstep_pomieszczenie_gotowe_dni)` (3), typ `klient` |
-| Brakujące informacje od klienta | `umowy.data_zawarcia + umowy.dni_na_brakujace_informacje` (liczone naprzód, patrz 7.2), typ `klient` |
+| Brakujące informacje od klienta | `umowy.data_zawarcia + umowy.dni_na_brakujace_informacje` (liczone naprzód, patrz 10.2), typ `klient` |
 | Płatności | `platnosci_planowane.termin` umowy zlecenia, typ `platnosc` |
 | Potwierdzenie pozycji „do potwierdzenia” | data planowa zamówienia, typ `klient` (tylko gdy zamówienie jest zablokowane) |
 
@@ -307,14 +317,15 @@ kontrolne).
   `"mimo_blokady": true` zwraca **409** `{"blad", "kod": "do_potwierdzenia", "wiersze_do_potwierdzenia": [id…]}` i
   niczego nie zapisuje; z tym polem zamówienie jest przyjmowane, a w `dziennik_zmian.opis` materiału zapisuje się
   „zamówiono mimo blokady – wiersze specyfikacji do potwierdzenia: …”.
-* **Dla agenta modułu specyfikacji**: blokady są czytane na bieżąco (`zablokowane` w odczytach zmienia się od razu po
-  zmianie statusu wiersza), ale zadania `potwierdzenie:<id materiału>` powstają/znikają dopiero przy przeliczeniu.
-  Po zmianie statusu wiersza (`do_potwierdzenia` ↔ inny) albo kategorii materiału wiersza wywołaj w swojej transakcji
-  `terminarz::przelicz_po_zmianie_specyfikacji(&mut tx, specyfikacja_id)` (przelicza zlecenia, których umowa wskazuje
-  tę specyfikację; zwraca `Vec<(zlecenie_id, Przeliczenie)>`) i po zatwierdzeniu wyślij zdarzenie
-  `zadania_kalendarza` z id zlecenia. Z interfejsu: `POST /zlecenia/{id}/przelicz`.
+* **Połączenie ze specyfikacją (zrobione w `integracja-1`)**: blokady są czytane na bieżąco, a zadania
+  `potwierdzenie:<id materiału>` powstają/znikają przy przeliczeniu. Moduł specyfikacji (`specyfikacje.rs`,
+  `po_zmianie_statusu_wiersza`) wywołuje `terminarz::przelicz_po_zmianie_specyfikacji` **w tej samej transakcji
+  zapisu**, gdy wiersz przechodzi z/na `do_potwierdzenia`, gdy zmienia się kategoria materiału takiego wiersza oraz przy
+  dodaniu/usunięciu wiersza, części albo sekcji z takimi wierszami. Po zatwierdzeniu API rozsyła zdarzenia `zlecenia`
+  i `zadania_kalendarza` (id 0) dla specyfikacji umów i aneksów. Test: `tests/integracja.rs`. Ręcznie:
+  `POST /zlecenia/{id}/przelicz`.
 
-### 7.2. Konwencja liczenia dni
+### 10.2. Konwencja liczenia dni
 
 Ustawienie `liczenie_dni`: `robocze` (domyślnie) albo `kalendarzowe`; dotyczy czasów dostaw, warsztatu, montażu,
 odstępów i progów ostrzeżeń.
@@ -340,7 +351,7 @@ Przykład kontrolny (tryb kalendarzowy, montaż pon. 8.02.2027, warsztat 14 dni,
 25.01–5.02, dostawa do 18.01, fronty MDF 18–24: sweet spot **23.12.2026** (18.01 − 24 = 25.12 święto → 24.12 Wigilia
 → 23.12), planowa 28.12, krytyczna 31.12; płyta 5–10: 8.01 / 11.01 / 13.01; rysunki 21.12; pomiar 14.12.2026.
 
-### 7.3. Stany ostrzeżeń (względem `dzis`)
+### 10.3. Stany ostrzeżeń (względem `dzis`)
 
 `stan.stan` ∈ `wykonane` < `spokojnie` < `zolty` < `pomaranczowy` < `czerwony` (kolejność = pilność; grupy w „do
 zamówienia” mają stan najpilniejszej pozycji).
@@ -357,12 +368,12 @@ planowej: spokojnie; w dniu krytycznej: pomarańczowy; dzień po krytycznej: cze
 Pozostałe zadania (termin = `data_do`, a gdy brak – `data_od`): `dzis > termin` → `czerwony`,
 `dzis ≥ wstecz(termin, prog_zbliza_sie_dni)` (domyślnie 3, włącznie z dniem terminu) → `zolty`, wcześniej `spokojnie`.
 
-### 7.4. API (prefiks `/api/v1`, klucz jak w rozdz. 2)
+### 10.4. API (prefiks `/api/v1`, klucz jak w rozdz. 2)
 
 Daty `RRRR-MM-DD` (lata 1990–2100). Parametr `dzis` (opcjonalny, domyślnie dzisiejsza data serwera) służy do
 wyliczenia stanów i do kontroli „data z przyszłości” w `wykonanie` – widżet i testy mogą podać własny.
 
-**Błędy** (zawsze JSON `{"blad": "…"}`):
+**Błędy** (zawsze JSON `{"blad": "…"}` – wspólna konwencja serwera, rozdz. 4):
 
 | Kod | Kiedy |
 | --- | --- |
@@ -373,9 +384,9 @@ wyliczenia stanów i do kontroli „data z przyszłości” w `wykonanie` – wi
 | 500 | błąd bazy – transakcja wycofana, **nic nie zapisano** |
 
 Wszystkie struktury wejściowe odrzucają nieznane pola (np. literówka `czas_warsztatu_dni` → 422 z nazwą pola).
-Parametr `klucz` (klucz API) jest dozwolony w każdym zapytaniu.
+Parametr `klucz` jest tolerowany w zapytaniach, ale **uwierzytelnia tylko WebSocket** `/zdarzenia` – trasy HTTP wymagają nagłówka `Authorization` (rozdz. 2).
 
-**Znacznik nieaktualnego harmonogramu** (patrz 7.1) – pola `harmonogram_nieaktualny: bool` i
+**Znacznik nieaktualnego harmonogramu** (patrz 10.1) – pola `harmonogram_nieaktualny: bool` i
 `harmonogram_nieaktualny_powod: string | null` są w: `Zlecenie` (wszystkie trasy zleceń), każdym `Zadanie`
 (`/kalendarz/zadania…`, `tydzien`, `do-zamowienia`, `zadania_zapisane`, odpowiedź `wykonanie`), a w `kolizje` – pole
 `harmonogram_nieaktualny` (któreś ze zleceń). `tydzien` i `do-zamowienia` mają listę `nieaktualne_harmonogramy:
@@ -462,9 +473,9 @@ Przykład – fragment `POST /zlecenia/1/harmonogram` (pole `harmonogram`):
 Kody ostrzeżeń: `brak_widelek`, `nieprawidlowe_widelki`, `do_potwierdzenia`, `brak_materialow`,
 `brak_czasu_warsztatu`, `montaz_w_dzien_wolny`, `harmonogram_przed_umowa`.
 
-### 7.5. Wskazówki dla UI kalendarza i widżetu
+### 10.5. Wskazówki dla UI kalendarza i widżetu
 
-* Kolor zadania = `typ` (`src/lib/kolory.ts`), pilność = `stan.stan` (obwódka/znacznik); `stan.opis` jest gotowym
+* Kolor zadania = `typ` (`src/lib/kolory.ts` → tokeny `--zadanie-*`), pilność = `stan.stan` (obwódka/znacznik); `stan.opis` jest gotowym
   tekstem po polsku.
 * Zamówienie ma okno `data_od` (sweet spot) – `data_do` (krytyczna) i znacznik `data_planowa` (= `termin`); w widoku
   miesiąca rysować pasek okna z wyróżnionym dniem planowym.
@@ -484,7 +495,7 @@ Kody ostrzeżeń: `brak_widelek`, `nieprawidlowe_widelki`, `do_potwierdzenia`, `
 * Edycja materiału wysyła tylko zmienione pola (PUT częściowy).
 * Typy TypeScript i metody klienta (`src/api/typy.ts`, `src/api/klient.ts`) dopisuje agent UI na podstawie tego rozdziału.
 
-### 7.6. Do decyzji użytkownika (obecne zachowanie bez zmian)
+### 10.6. Do decyzji użytkownika (obecne zachowanie bez zmian)
 
 * Wigilia (24.12, od 2025 r.) liczona jako dzień wolny.
 * Średnia z widełek zaokrąglana w dół (późniejsza data planowa).
