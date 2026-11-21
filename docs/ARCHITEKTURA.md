@@ -1,6 +1,6 @@
 # Architektura programu ROBINWOOD
 
-Dokument dla kolejnych agentów i programistów. Stan: gałąź `integracja-1` = Faza 0 (szkielet) + Faza 2 (Generator Ofert z poprawkami po recenzji, rozdz. 7–9) + Faza 4a (silnik terminów, rozdz. 10). Wspólne konwencje błędów, transakcji i migracji: rozdz. 3–5.
+Dokument dla kolejnych agentów i programistów. Stan: gałąź `integracja-1` = Faza 0 (szkielet) + Faza 2 (Generator Ofert z poprawkami po recenzji, rozdz. 7–9) + Faza 4a (silnik terminów, rozdz. 10) + Faza 4b (interfejs kalendarza, widżet, powiadomienia – rozdz. 11). Wspólne konwencje błędów, transakcji i migracji: rozdz. 3–5.
 
 ## 1. Stos
 
@@ -34,14 +34,14 @@ Rozważane alternatywy: Electron (większy instalator, osobny serwer w Node), Po
 * **Dostęp** chroni klucz API (32 znaki, generowany przy wyborze trybu serwer): nagłówek `Authorization: Bearer <klucz>`, dla WebSocket parametr `?klucz=`. `GET /api/v1/status` jest jawny (test połączenia).
 * Ruch w sieci lokalnej jest nieszyfrowany (HTTP). Akceptowalne w zaufanej sieci firmowej z hasłem Wi-Fi; jeśli sieć jest współdzielona, do rozważenia TLS z certyfikatem samopodpisanym (otwarty problem).
 * Windows pyta o zgodę zapory przy pierwszym nasłuchu na 0.0.0.0 – trzeba zezwolić dla sieci prywatnej. mDNS bywa blokowany przez izolację klientów w routerach Wi-Fi – wtedy adres wpisuje się ręcznie.
-* Gdy serwer jest niedostępny, klient pokazuje „Brak połączenia”. Pamięć podręczna tylko do odczytu (kalendarz offline) – do zrobienia w fazie Kalendarz.
+* Gdy serwer jest niedostępny, klient pokazuje „Brak połączenia”. Widżet trzyma ostatnio pobrane zadania w pamięci lokalnej i bez serwera pokazuje je tylko do odczytu z godziną synchronizacji (rozdz. 11.5).
 
 ### Okna, zasobnik, autostart, powiadomienia
 
-* Okna (`src-tauri/tauri.conf.json`): `main` (główne) i `widzet` (320×420, bez ramki, bez paska zadań, `alwaysOnBottom` – „przypięte do pulpitu”). Oba ładują to samo `index.html`; `src/main.tsx` wybiera widok po etykiecie okna.
+* Okna (`src-tauri/tauri.conf.json`): `main` (główne) i `widzet` (360×520, bez ramki, bez paska zadań, `alwaysOnBottom` – „przypięte do pulpitu”). Oba ładują to samo `index.html`; `src/main.tsx` wybiera widok po etykiecie okna.
 * Zamknięcie okna chowa je (`on_window_event`); wyjście przez menu zasobnika *Zakończ*.
 * Autostart: `tauri-plugin-autostart` z argumentem `--zminimalizowany` – start bez okna głównego, z widżetem. Włączany w *Ustawienia*.
-* Powiadomienia: `tauri-plugin-notification`, moduł `src-tauri/src/powiadomienia.rs` (na razie tylko testowe).
+* Powiadomienia: `tauri-plugin-notification`, moduł `src-tauri/src/powiadomienia.rs` (wyświetlanie, komenda `pokaz_powiadomienie`); logika „co i kiedy” – rozdz. 11.6.
 * `tauri-plugin-single-instance`: drugie uruchomienie tylko pokazuje okno.
 
 ## 3. Schemat danych
@@ -134,7 +134,7 @@ Wszystkie zmiany specyfikacji zwracają `{id, specyfikacja}` – całe aktualne 
 | --- | --- | --- |
 | Oferty | `crates/robinwood-serwer/src/oferty.rs` (+ `specyfikacje.rs` wspólny z umowami) | `src/moduly/oferty/`, wspólny edytor specyfikacji w `src/moduly/specyfikacja/` |
 | Umowy | `.../src/umowy.rs`, `wplaty.rs`, `aneksy.rs` | `src/moduly/umowy/` |
-| Kalendarz | `.../src/kalendarz/` (czysta logika liczenia terminów w osobnym module bez bazy, testowana jednostkowo; święta PL) | `src/moduly/kalendarz/`, `src/widzet/` |
+| Kalendarz | `.../src/kalendarz/` (czysta logika liczenia terminów w osobnym module bez bazy, testowana jednostkowo; święta PL), `kalendarz_ui.rs` (trasy pomocnicze UI) | `src/moduly/kalendarz/`, `src/moduly/zamowienia/`, `src/moduly/pulpit/`, `src/widzet/`, `src/lib/powiadomienia.ts` |
 | Korespondencja | `.../src/korespondencja/` (Gmail API, parser eksportu WhatsApp) | `src/moduly/korespondencja/` |
 | Powiadomienia | logika „co i kiedy” po stronie serwera lub klienta, wyświetlanie: `src-tauri/src/powiadomienia.rs` | – |
 
@@ -419,6 +419,9 @@ zawierają `przeliczone_zlecenia: [id]` i `nieprzeliczone_zlecenia: [{zlecenie_i
 | `GET/POST /dostawcy`, `PUT /dostawcy/{id}` | dostawcy |
 | `PUT /kategorie-materialow/{id}/widelki` | `{dni_dostawy_min, dni_dostawy_max, domyslny_dostawca_id?}` → 204 (nieudane przeliczenia widać po znaczniku zleceń) |
 | `GET/POST /czasy-dostaw`, `PUT/DELETE /czasy-dostaw/{id}` | widełki pary `{kategoria_id, dostawca_id, dni_min, dni_max}`; POST/PUT zwracają rekord + `przeliczone_zlecenia`, `nieprzeliczone_zlecenia` |
+| `POST /import/kategorie-materialow` | (Faza 4b) `{wiersze: [{wiersz?, kategoria, przykladowe_materialy?, dostawca?, czas_dostawy_min_dni?, czas_dostawy_max_dni?}]}` – jedna transakcja, jedno przeliczenie; → `{kategorie_dodane, kategorie_zaktualizowane, dostawcy_dodani, czasy_dostaw_ustawione, bez_czasu_dostawy, pominiete: [{wiersz, powod}], przeliczone_zlecenia, nieprzeliczone_zlecenia}`. Wiersz z dostawcą: para kategoria + dostawca (i domyślny dostawca kategorii, jeśli pusty); bez dostawcy: widełki kategorii |
+| `POST /kalendarz/dni-wolne/zakres`, `POST /kalendarz/dni-wolne/usun-zakres` | (Faza 4b) `{od, do, rodzaj?, opis?}` / `{od, do}` – zakres ≤ 366 dni jednym zapisem i jednym przeliczeniem → `{dni, przeliczone_zlecenia, nieprzeliczone_zlecenia}` |
+| `GET /kalendarz/wiersze-specyfikacji?ids=1,2` | (Faza 4b) opis wierszy „do potwierdzenia” `[{id, sekcja, czesc, rodzaj, material, opis, status}]` (≤ 200) – okno „zamówić mimo to?” |
 
 **Zdarzenia WebSocket**: `zlecenia`, `zamowienia_materialow`, `dostawcy`, `kategorie_materialow`, `czasy_dostaw`,
 `ustawienia`, `dni_wolne` (id rekordu albo 0) oraz `zadania_kalendarza` – tu **`id` = id zlecenia**, którego zadania
@@ -505,3 +508,60 @@ Kody ostrzeżeń: `brak_widelek`, `nieprawidlowe_widelki`, `do_potwierdzenia`, `
 * Definicja kolizji warsztatu (nakładanie się okresów składania dwóch zleceń, bez uwzględnienia pojemności warsztatu;
   pomijany tylko etap `zakonczone`).
 * Termin rysunków liczony od najwcześniejszej daty planowej wszystkich materiałów, także już zamówionych.
+
+## 11. Kalendarz – interfejs, widżet, powiadomienia (Faza 4b)
+
+### 11.1. Gdzie co jest
+
+| Miejsce | Zawartość |
+| --- | --- |
+| `src/moduly/kalendarz/` | `WidokKalendarza` (miesiąc/tydzień, filtry, legenda, lista dnia), `SiatkaKalendarza` (siatka, paski, klawiatura), `PanelZadania` (szczegóły i akcje, `useWykonanie` z obsługą 409, `OknoBlokady`), `OknoZadania` (zadania ręczne), `OsCzasu` (oś czasu zlecenia), `UstawieniaKalendarza` (ustawienia wspólne), `UstawieniaPowiadomien` (ustawienia stanowiska, wstawione w moduł Ustawienia) |
+| ten sam folder – czysta logika z testami | `daty.ts` (ISO, UTC, polskie nazwy), `uklad.ts` (tory pasków w tygodniu, „+N więcej”), `filtry.ts`, `roznice.ts` (co się przesunęło / zamrożone), `importCsv.ts`; `wyglad.tsx` – ikony i nazwy typów, etykiety stanów (wspólne dla Zamówień, Pulpitu i widżetu); `dane.ts` – pobieranie zakresu + odświeżanie po zdarzeniach WebSocket; `szkic.ts` – kopia formularza w localStorage |
+| `src/moduly/zamowienia/` | moduł Zamówienia (wpis w `rejestr.tsx`) |
+| `src/moduly/pulpit/` | Pulpit: liczniki, alerty z akcją, zaległe, tydzień, kolizje, nieaktualne harmonogramy, tablica etapów (`zlecenia.etap`) |
+| `src/widzet/` | widżet (`Widzet.tsx`), `logika.ts` (grupowanie, pamięć offline) |
+| `src/lib/powiadomienia.ts`, `src/lib/planerPowiadomien.ts` | czysta logika „co i kiedy” + planer w oknie głównym |
+| `src-tauri/src/widzet.rs` | pozycja i widoczność widżetu (`widzet.json`), przywracanie przy starcie |
+| `crates/robinwood-serwer/src/kalendarz_ui.rs` | trasy pomocnicze (import kategorii, zakresy dni wolnych, opis wierszy „do potwierdzenia”) – rozdz. 10.4 |
+| `narzedzia/zasil_kalendarz.py` | fikcyjne dane do sprawdzania (stany czerwony/pomarańczowy/żółty, blokada, kolizja, nieaktualny harmonogram, dni wolne, historia dostaw; `--duzo` = 40 zleceń) |
+| `docs/przyklady/kategorie-materialow.csv` | fikcyjny przykład pliku importu (z jednym celowo błędnym wierszem) |
+
+Migracje: Faza 4b **nie dodała migracji** (zarezerwowany numer 0007 pozostaje wolny).
+
+### 11.2. Kalendarz
+
+* Pobierany jest tylko widoczny zakres (`GET /kalendarz/zadania?od=&do=` – 4–6 tygodni siatki albo tydzień) + święta lat zakresu i dni wolne. Odświeżanie po zdarzeniach z rozdz. 10.4 (z opóźnieniem 300 ms, scalające serie).
+* Stan widoku w adresie: `#/kalendarz?widok=tydzien&data=2026-11-21&zadanie=15` – z tego korzystają widżet, Pulpit i Zamówienia. Zadanie spoza zakresu jest dociągane (`GET /kalendarz/zadania/{id}`).
+* Paski: kolor = typ (lewa krawędź, ikona, jasne tło), stan = obwódka + ikona stanu (żółty 1 px, pomarańczowy i czerwony 2 px), wykonane – wyszarzone i przekreślone, nieaktualny harmonogram – przerywana obwódka, blokada – kłódka. Zamówienie: pasek od sweet spotu do daty krytycznej, jaśniejszy do daty planowej i ciemniejszy po niej, romb w dniu planowym; pasek przechodzący na kolejny tydzień ma strzałki i przerywaną krawędź.
+* Liczba torów w wierszu miesiąca liczona z wysokości (ResizeObserver); nadmiar → „+N więcej” (lista dnia). Widok tygodnia – bez limitu, dwulinijkowe paski z opisem stanu.
+* Klawiatura: fokus na dniach (roving tabindex), strzałki ←→↑↓, Home/End, Enter/Spacja – lista dnia, PageUp/PageDown – poprzedni/następny okres, Esc – zamyka panel/okno. Paski w widoku miesiąca nie są w kolejności Tab (dostęp przez listę dnia), w tygodniu – są.
+* Filtry (typ, zlecenie, klient, tylko niewykonane, tylko z ostrzeżeniem) liczone po stronie interfejsu, zapamiętywane na stanowisku. „Z ostrzeżeniem” = żółty/pomarańczowy/czerwony, zagrożona dostawa, blokada albo nieaktualny harmonogram.
+* Panel zadania: opis stanu z API, przy czerwonym – nowy możliwy termin montażu, akcje: wykonanie z datą (≤ dziś), zamówienie z datą zamówienia i opcjonalnie dostawy, zapis dostawy, cofnięcie wykonania / zamówienia (z potwierdzeniem), edycja/usunięcie zadań ręcznych. 409 `do_potwierdzenia` → okno z wierszami specyfikacji (sekcja → część, rodzaj, materiał, opis) i przyciskiem „Zamawiam mimo to” (ponowienie z `mimo_blokady: true`).
+
+### 11.3. Oś czasu zlecenia (`#/kalendarz/zlecenie/{id}`)
+
+Wiersze: pomiar, rysunki, każdy materiał (okno sweet/planowa/krytyczna, ✓ data zamówienia, paczka – dostawa oczekiwana/faktyczna, czerwona przy zagrożeniu), „materiały na warsztacie” (data wymaganej dostawy), warsztat, montaż, odbiór (koniec montażu – silnik nie ma osobnej daty odbioru), pozostałe (klient, płatności, ręczne); linia „dziś”. Formularz (szkic w localStorage): początek montażu, czas warsztatu, czas montażu → `PUT /zlecenia/{id}` (pełne dane zlecenia; bez harmonogramu dodatkowo `POST …/harmonogram`) → lista „co się zmieniło” (`roznice.ts`: przesunięte z liczbą dni, zamrożone – wykonane / zamówione / ręczne, dodane, usunięte). Ostrzeżenia silnika z `GET /zlecenia/{id}/harmonogram`; `brak_widelek`/`nieprawidlowe_widelki` z odnośnikiem do ustawień. **Brak podglądu przed zapisem** – API nie ma trasy „przelicz bez zapisu z innymi parametrami”; zmiana jest zapisywana i od razu pokazywana różnica.
+
+### 11.4. Zamówienia, Pulpit, ustawienia
+
+* Zamówienia: „Do zamówienia” = `GET /kalendarz/do-zamowienia` (grupy dostawców, filtr stanu, „Zamówione dziś”, szczegóły w panelu), materiały bez widełek z odnośnikiem; „Zamówione – czekamy na dostawę” = zadania `zamowienie` wykonane ze statusem `zamowione` (zagrożone na górze, „Dostarczone dziś”).
+* Pulpit: `tydzien` + `do-zamowienia` + `kolizje` (120 dni) + `zlecenia` + `klienci`.
+* Ustawienia kalendarza (wspólne): widełki kategorii (0–0 = „nie ustawiono”, „tylko u dostawców (n)”, gdy są tylko pary), pary kategoria + dostawca, statystyka z „Przyjmij sugerowane widełki” (para → `POST/PUT /czasy-dostaw`, bez dostawcy → `PUT …/widelki`), dostawcy, tryb liczenia dni z wyjaśnieniem, odstępy i progi (zapis tylko zmienionych pól), dni wolne (pojedyncze i zakresy, grupowane w tabeli), podgląd świąt, import CSV (parsowanie w przeglądarce → podgląd → `POST /import/kategorie-materialow` → raport pominiętych). Po zapisie: przeliczone i nieprzeliczone zlecenia z powodem (dla tras bez raportu – lista zleceń ze znacznikiem nieaktualności).
+
+### 11.5. Widżet
+
+Okno `widzet` 360×520, bez ramki, `alwaysOnBottom`, bez paska zadań. Przeciąganie za nagłówek (`data-tauri-drag-region`, uprawnienie `core:window:allow-start-dragging`). Pozycja i „schowany” – `widzet.json` w folderze konfiguracji stanowiska (pozycja przywracana tylko, gdy leży na którymś monitorze). Widżet pokazuje się przy każdym starcie, chyba że użytkownik go schował (przycisk w widżecie, menu zasobnika, Ustawienia). Dane: `zadania?od=dziś&do=+7&tylko_niewykonane` + `zadania?stan=czerwony,pomaranczowy&tylko_niewykonane`; odświeżanie po zdarzeniach, co 5 min, przy fokusie i po ponownym połączeniu gniazda. Zaległe i krytyczne na górze (4 + „pokaż wszystkie”), potem dziś i dni z zadaniami. Kliknięcie → komenda `otworz_sciezke` → okno główne dostaje zdarzenie `robinwood://przejdz` i otwiera zadanie. Bez serwera: dane z `localStorage` (`robinwood:widzet:pamiec`) z napisem „Dane z … – tylko do odczytu”.
+
+### 11.6. Powiadomienia Windows
+
+* `wyznaczPowiadomienia(zadania, ustawienia, teraz, historia) → {powiadomienia, historia}` – czysta funkcja (bez zegara). Zasady: poranne podsumowanie raz dziennie od ustawionej godziny (domyślnie 7:30; pomijane, gdy nic nie ma); przypomnienia N dni przed terminem (domyślnie 7, 3, 1; dni kalendarzowe; od godziny porannej; gdy program nie działał w dniu progu – przy najbliższym obowiązującym progu, bez zaległych wcześniejszych); alert przy wejściu w pomarańczowy i w czerwony – od razu (czerwony bez spóźnionego pomarańczowego, z nowym terminem montażu); zadania pomarańczowe/czerwone nie dostają dodatkowo przypomnień; > 3 naraz jednego rodzaju → jedno zbiorcze; typy wyciszone pomijane. Klucze w historii zawierają id i termin (`przed:{id}:{termin}:{N}`, `stan:{id}:{stan}:{termin}`, `podsumowanie:{data}`), więc po przesunięciu terminu przypomnienia działają od nowa; wpisy starsze niż 90 dni są usuwane.
+* Planer (`usePlanerPowiadomien`, montowany w oknie głównym – działa także, gdy okno jest schowane): co minutę wylicza, dane pobiera co 5 min i po zdarzeniach; najwyżej 5 powiadomień naraz. Ustawienia i historia – `localStorage` stanowiska (przeżywa restart). Wyświetlanie: komenda Tauri `pokaz_powiadomienie`.
+* Ograniczenie: kliknięcie powiadomienia nie otwiera zadania (wtyczka powiadomień nie obsługuje akcji kliknięcia na Windows); powiadomienie podaje nazwę zadania.
+
+### 11.7. Autostart
+
+`tauri-plugin-autostart` z `--zminimalizowany` (przełącznik w Ustawieniach): start bez okna głównego – ikona w zasobniku i widżet (jeśli nie był schowany).
+
+### 11.8. Sprawdzone i niesprawdzone
+
+Sprawdzone: testy jednostkowe i komponentów (vitest), scenariusze w Chromium headless (Playwright) przy 1920×1080, 1536×864 (skala 1,25) i 1366×768, pełna aplikacja Tauri pod Xvfb (okno główne + widżet, tryb `--zminimalizowany`, przywracanie pozycji widżetu). **Niesprawdzone (wymaga Windows):** wygląd i działanie powiadomień, menu zasobnika, autostart w rejestrze, „przypięcie” `alwaysOnBottom`, przeciąganie widżetu, przejście z widżetu do zadania, format pól daty (w Chromium headless widoczny układ amerykański; WebView2 na polskim Windows pokazuje dd.mm.rrrr).

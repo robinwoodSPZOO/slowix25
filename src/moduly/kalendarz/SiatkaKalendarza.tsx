@@ -3,7 +3,7 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { ChevronLeft, ChevronRight, Diamond, Lock, TriangleAlert } from "lucide-react";
 import type { DzienWolny, ZadanieKalendarza } from "../../api/typy";
-import { czyWeekend, dodajDni, DNI_TYGODNIA, DNI_TYGODNIA_KROTKO, pelnaData, roznicaDni } from "./daty";
+import { czyWeekend, dodajDni, DNI_TYGODNIA, DNI_TYGODNIA_KROTKO, NAZWY_MIESIECY_DOPELNIACZ, pelnaData, roznicaDni } from "./daty";
 import { pozycjaPlanowej, torowWWierszu, ukladTygodnia, type Segment } from "./uklad";
 import { IkonaStanu, IkonaTypu, kolorTypu, nazwaTypu, STANY } from "./wyglad";
 
@@ -122,7 +122,7 @@ const Pasek = memo(function Pasek({
       {s.ciagnieSieWPrawo && <ChevronRight className="pasek__ciag" size={11} aria-hidden />}
       {planowa !== null && (
         <span className="pasek__planowa" style={{ left: `${planowa}%` }} title={`Data planowa: ${z.data_planowa}`}>
-          <Diamond size={9} aria-hidden />
+          <Diamond size={8} aria-hidden />
         </span>
       )}
       {z.typ !== "zamowienie" && z.termin < dzis && !z.wykonano && <span className="sr-only">po terminie</span>}
@@ -193,7 +193,7 @@ function Tydzien({
           >
             <div className="komorka__naglowek">
               <button type="button" tabIndex={-1} className="komorka__numer" onClick={() => onOtworzDzien(d)} aria-label={`Lista zadań: ${pelnaData(d)}`}>
-                {tydzien ? `${DNI_TYGODNIA_KROTKO[k]} ${Number(d.slice(8, 10))}` : Number(d.slice(8, 10))}
+                {tydzien ? `${Number(d.slice(8, 10))} ${NAZWY_MIESIECY_DOPELNIACZ[Number(d.slice(5, 7)) - 1]}` : Number(d.slice(8, 10))}
               </button>
               {(swieto || wolny) && (
                 <span className="komorka__swieto" title={swieto ?? wolny?.opis ?? RODZAJE_DNI[wolny?.rodzaj ?? "inne"]}>

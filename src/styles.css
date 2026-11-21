@@ -53,5 +53,4 @@ button { font: inherit; cursor: pointer; }
 .pasek { display: flex; gap: var(--o-8); align-items: center; margin-bottom: var(--o-12); }
 .legenda { display: flex; flex-wrap: wrap; gap: var(--o-12); }
 .legenda span::before { content: ""; display: inline-block; width: 12px; height: 12px; margin-right: 6px; background: var(--kolor); vertical-align: -1px; }
-.widzet { padding: var(--o-12); background: var(--tlo-powierzchni); height: 100vh; border: 1px solid var(--linia); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
