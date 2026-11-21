@@ -1,6 +1,8 @@
 // Daty kalendarza jako tekst ISO „RRRR-MM-DD” (jak w API). Arytmetyka na UTC, żeby zmiana czasu
 // (marzec/październik) nie przesuwała dni. Czyste funkcje – bez sięgania do zegara (poza `dzisIso`).
 
+import { DZIEN, liczba } from "../../lib/odmiana";
+
 export const NAZWY_MIESIECY = [
   "styczeń", "luty", "marzec", "kwiecień", "maj", "czerwiec",
   "lipiec", "sierpień", "wrzesień", "październik", "listopad", "grudzień",
@@ -118,8 +120,7 @@ export function wzgledny(dni: number | null | undefined): string {
   if (dni === 1) return "jutro";
   if (dni === -1) return "wczoraj";
   const n = Math.abs(dni);
-  const slowo = n === 1 ? "dzień" : "dni";
-  return dni > 0 ? `za ${n} ${slowo}` : `${n} ${slowo} po terminie`;
+  return dni > 0 ? `za ${liczba(n, DZIEN)}` : `${liczba(n, DZIEN)} po terminie`;
 }
 
 /** Lata obejmowane przez zakres (do pobrania świąt). */

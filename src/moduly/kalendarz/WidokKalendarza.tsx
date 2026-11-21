@@ -326,7 +326,7 @@ export function WidokKalendarza() {
         <div className="komunikat-stanu stan-tlo--neutralny">
           <Filter size={16} aria-hidden />
           <span>
-            Żadne z {dane.zadania.length} zadań nie pasuje do filtrów.{" "}
+            Żadne z wczytanych zadań ({dane.zadania.length}) nie pasuje do filtrów.{" "}
             <button type="button" className="link" onClick={() => ustawFiltry(PUSTE_FILTRY)}>
               Wyczyść filtry
             </button>

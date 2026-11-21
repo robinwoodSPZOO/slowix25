@@ -5,6 +5,8 @@ import { DostawcaPolaczenia } from "./kontekst/Polaczenie";
 import { oproznijWszystkieSzkice } from "./lib/szkice";
 import { etykietaOkna, obsluzZamykanieOkna } from "./lib/tauri";
 import { Widzet } from "./widzet/Widzet";
+import { wyczyscPamiec } from "./widzet/logika";
+import { GranicaBledow } from "./ui";
 import "./styles.css";
 
 // To samo index.html obsługuje okno główne i okno-widżet; rozróżniamy po etykiecie okna Tauri.
@@ -15,7 +17,17 @@ etykietaOkna().then((etykieta) => {
   if (etykieta !== "widzet") void obsluzZamykanieOkna(oproznijWszystkieSzkice);
   createRoot(korzen).render(
     <StrictMode>
-      <DostawcaPolaczenia>{etykieta === "widzet" ? <Widzet /> : <App />}</DostawcaPolaczenia>
+      <DostawcaPolaczenia>
+        {etykieta === "widzet" ? (
+          <GranicaBledow nazwa="Widżet" kompaktowo onOdswiez={wyczyscPamiec}>
+            <Widzet />
+          </GranicaBledow>
+        ) : (
+          <GranicaBledow nazwa="ROBINWOOD">
+            <App />
+          </GranicaBledow>
+        )}
+      </DostawcaPolaczenia>
     </StrictMode>,
   );
 });

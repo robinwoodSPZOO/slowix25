@@ -1,7 +1,7 @@
 // Pobieranie danych kalendarza z API i odświeżanie po zdarzeniach WebSocket.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BladApi } from "../../api/klient";
+import { BladApi, type KlientApi } from "../../api/klient";
 import type { DzienWolny, Klient, Swieto, ZadanieKalendarza, Zlecenie } from "../../api/typy";
 import { usePolaczenie } from "../../kontekst/Polaczenie";
 import { lataZakresu } from "./daty";
@@ -33,19 +33,58 @@ export function komunikatBledu(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** Wywołuje `f` (z opóźnieniem 300 ms, scalając serie) po zdarzeniu dotyczącym podanych zasobów. */
+export const OPOZNIENIE_ODSWIEZANIA_MS = 300;
+
+/**
+ * Wywołuje `f` (z opóźnieniem 300 ms, scalając serie) po zdarzeniu dotyczącym podanych zasobów
+ * oraz po KAŻDYM ponownym połączeniu gniazda zdarzeń (w czasie przerwy zdarzenia przepadają).
+ * Zdarzenia innych zasobów nie przesuwają ani nie kasują zaplanowanego odświeżenia.
+ */
 export function useOdswiezaniePoZdarzeniu(f: () => void, zasoby: string[] = ZASOBY_KALENDARZA) {
-  const { ostatnieZdarzenie } = usePolaczenie();
+  const { ostatnieZdarzenie, wznowienia } = usePolaczenie();
   const ref = useRef(f);
   useEffect(() => {
     ref.current = f;
   });
+  const licznik = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const zaplanuj = useCallback(() => {
+    if (licznik.current) clearTimeout(licznik.current);
+    licznik.current = setTimeout(() => {
+      licznik.current = null;
+      ref.current();
+    }, OPOZNIENIE_ODSWIEZANIA_MS);
+  }, []);
+  // Sprzątanie tylko przy odmontowaniu – nie przy każdym nowym zdarzeniu.
+  useEffect(
+    () => () => {
+      if (licznik.current) clearTimeout(licznik.current);
+    },
+    [],
+  );
   const klucz = zasoby.join(",");
   useEffect(() => {
-    if (!ostatnieZdarzenie || !klucz.split(",").includes(ostatnieZdarzenie.zasob)) return;
-    const t = setTimeout(() => ref.current(), 300);
-    return () => clearTimeout(t);
-  }, [ostatnieZdarzenie, klucz]);
+    if (ostatnieZdarzenie && klucz.split(",").includes(ostatnieZdarzenie.zasob)) zaplanuj();
+  }, [ostatnieZdarzenie, klucz, zaplanuj]);
+  const pierwsze = useRef(wznowienia);
+  useEffect(() => {
+    if (wznowienia !== pierwsze.current) zaplanuj();
+  }, [wznowienia, zaplanuj]);
+}
+
+// Święta ustawowe nie zmieniają się – pamiętamy je per rok (i per połączenie z serwerem).
+const pamiecSwiat = new WeakMap<KlientApi, Map<number, Promise<Swieto[]>>>();
+
+export function swietaRoku(api: KlientApi, rok: number): Promise<Swieto[]> {
+  let m = pamiecSwiat.get(api);
+  if (!m) pamiecSwiat.set(api, (m = new Map()));
+  let p = m.get(rok);
+  if (!p) {
+    p = api.kalendarz.swieta(rok);
+    const mapa = m;
+    p.catch(() => mapa.delete(rok)); // nieudane pobranie – spróbujemy przy następnym odświeżeniu
+    m.set(rok, p);
+  }
+  return p;
 }
 
 export interface DaneKalendarza {
@@ -74,7 +113,7 @@ export function useDaneKalendarza(od: string, doDnia: string): DaneKalendarza {
     const nr = ++licznik.current;
     Promise.all([
       api.kalendarz.zadania({ od, do: doDnia }),
-      Promise.all(lataZakresu(od, doDnia).map((r) => api.kalendarz.swieta(r))),
+      Promise.all(lataZakresu(od, doDnia).map((r) => swietaRoku(api, r))),
       api.kalendarz.dniWolne(od, doDnia),
     ]).then(
       ([z, s, w]) => {

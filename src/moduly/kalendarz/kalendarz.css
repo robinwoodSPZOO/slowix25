@@ -315,7 +315,8 @@ a.przycisk { text-decoration: none; }
 .ustawienia-powiadomien > .pole__pomoc { font-size: var(--rozmiar-etykieta); margin: 0; }
 .ustawienia-powiadomien__pola { border: 1px solid var(--linia); border-radius: var(--r-8); padding: var(--o-12) var(--o-16); display: flex; flex-direction: column; gap: var(--o-12); margin: 0; background: var(--tlo-powierzchni); }
 .ustawienia-powiadomien__pola:disabled { opacity: 0.55; }
-.ustawienia-powiadomien__wiersz { display: grid; grid-template-columns: 300px 260px; gap: var(--o-12); align-items: center; }
+.ustawienia-powiadomien__wiersz { display: grid; grid-template-columns: 300px repeat(2, minmax(200px, 260px)); gap: var(--o-12); align-items: start; }
+.wejscie--godzina { width: 80px; font-variant-numeric: tabular-nums; }
 .ustawienia-powiadomien__typy { display: flex; flex-wrap: wrap; gap: var(--o-6) var(--o-16); margin-top: var(--o-4); }
 .przelacznik { display: inline-flex; align-items: center; gap: var(--o-6); font-size: var(--rozmiar-tabela); cursor: pointer; }
 .przelacznik input { width: 16px; height: 16px; accent-color: var(--akcent); }

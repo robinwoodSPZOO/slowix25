@@ -21,7 +21,7 @@ import type {
 } from "../../api/typy";
 import { usePolaczenie } from "../../kontekst/Polaczenie";
 import { formatujDate } from "../../lib/formaty";
-import { EtykietaStatusu, Pole, Przycisk, Segment } from "../../ui";
+import { EtykietaStatusu, Pole, Przycisk, Segment, PoleDaty } from "../../ui";
 import { komunikatBledu, useOdswiezaniePoZdarzeniu } from "./dane";
 import { dodajDni, dzisIso, poprawnaData, rokMiesiac } from "./daty";
 import { parsujKategorieCsv, type WynikParsowania } from "./importCsv";
@@ -668,10 +668,10 @@ function SekcjaDniWolnych({ dni, swieta, onWynik }: { dni: DzienWolny[]; swieta:
       <p className="pole__pomoc">Soboty, niedziele i święta ustawowe program zna sam. Tu dopisz urlopy, przerwy u dostawców i inne dni bez pracy – terminy je ominą.</p>
       <div className="formularz-dni">
         <Pole etykieta="Od" id="dw-od" blad={bladOd}>
-          <input id="dw-od" type="date" value={f.od} onChange={(e) => ustawF({ ...f, od: e.target.value })} />
+          <PoleDaty id="dw-od" wartosc={f.od} onZmiana={(v) => ustawF({ ...f, od: v })} />
         </Pole>
         <Pole etykieta="Do (dla zakresu)" id="dw-do" blad={bladDo}>
-          <input id="dw-do" type="date" min={f.od} value={f.do} onChange={(e) => ustawF({ ...f, do: e.target.value })} />
+          <PoleDaty id="dw-do" wartosc={f.do} min={f.od} onZmiana={(v) => ustawF({ ...f, do: v })} />
         </Pole>
         <Pole etykieta="Rodzaj" id="dw-rodzaj">
           <select id="dw-rodzaj" value={f.rodzaj} onChange={(e) => ustawF({ ...f, rodzaj: e.target.value as RodzajDniaWolnego })}>

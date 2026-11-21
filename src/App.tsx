@@ -1,5 +1,7 @@
 import { useEffect } from "react";
-import { HashRouter, NavLink, Route, Routes, useNavigate } from "react-router-dom";
+import { HashRouter, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { WifiOff } from "lucide-react";
+import { GranicaBledow } from "./ui";
 import { usePolaczenie } from "./kontekst/Polaczenie";
 import { MODULY, type Modul } from "./moduly/rejestr";
 import { usePlanerPowiadomien } from "./lib/planerPowiadomien";
@@ -19,9 +21,25 @@ function BrakPolaczenia() {
 
 function Strona({ modul }: { modul: Modul }) {
   const { api } = usePolaczenie();
+  const { pathname } = useLocation();
   if (modul.wymagaPolaczenia && !api) return <BrakPolaczenia />;
   const K = modul.komponent;
-  return <K />;
+  return (
+    <GranicaBledow nazwa={modul.nazwa} reset={pathname}>
+      <K />
+    </GranicaBledow>
+  );
+}
+
+/** W czasie przerwy w połączeniu z serwerem (gniazdo zdarzeń) – dyskretny pasek nad treścią. */
+function PasekPrzerwy() {
+  const { api, naZywo } = usePolaczenie();
+  if (!api || naZywo !== false) return null;
+  return (
+    <div className="pasek-przerwy" role="status">
+      <WifiOff size={14} aria-hidden /> Brak połączenia z serwerem – dane mogą być nieaktualne. Program łączy się ponownie…
+    </div>
+  );
 }
 
 function PasekStanu() {
@@ -74,6 +92,7 @@ export function App() {
           </div>
         </nav>
         <main className="tresc">
+          <PasekPrzerwy />
           <Routes>
             {MODULY.map((m) => (
               <Route key={m.sciezka} path={m.sciezka === "/" ? "/" : `${m.sciezka}/*`} element={<Strona modul={m} />} />

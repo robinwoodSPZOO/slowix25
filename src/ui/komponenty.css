@@ -20,6 +20,7 @@
 }
 .przycisk:focus-visible { outline: none; box-shadow: var(--fokus); }
 .przycisk:disabled { cursor: not-allowed; opacity: 0.5; }
+.przycisk[aria-disabled="true"] { cursor: progress; opacity: 0.6; }
 .przycisk--maly { height: 26px; padding: 0 var(--o-8); font-size: var(--rozmiar-etykieta); gap: var(--o-4); }
 .przycisk--ikona { padding: 0; width: var(--wys-pola); }
 .przycisk--maly.przycisk--ikona { width: 26px; }
@@ -161,3 +162,35 @@
 .naglowek-modulu__akcje { display: flex; gap: var(--o-8); flex-wrap: wrap; }
 .tabela-bledow { margin-top: var(--o-6); font-size: var(--rozmiar-etykieta); }
 .tabela-bledow td, .tabela-bledow th { padding: var(--o-4) var(--o-6); }
+
+/* Granica błędów (GranicaBledow.tsx) */
+.granica-bledow { display: flex; gap: var(--o-12); align-items: flex-start; margin: var(--o-24); padding: var(--o-16); border: 1px solid var(--stan-czerwony); border-radius: var(--r-8); background: var(--stan-czerwony-tlo); color: var(--tekst); max-width: 640px; }
+.granica-bledow p { margin: var(--o-6) 0; }
+.granica-bledow__szczegoly { font-family: ui-monospace, monospace; font-size: 12px; color: var(--tekst-drugorzedny); word-break: break-word; }
+.granica-bledow--kompaktowo { margin: var(--o-8); padding: var(--o-12); font-size: 13px; }
+
+/* Pole daty dd.mm.rrrr z kalendarzem (PoleDaty.tsx) */
+.pole-daty { position: relative; display: inline-flex; align-items: stretch; width: 100%; max-width: 170px; }
+.pole-daty__wejscie { flex: 1; min-width: 0; width: 100%; padding-right: 32px !important; font-variant-numeric: tabular-nums; }
+.pole-daty__przycisk { position: absolute; right: 2px; top: 2px; bottom: 2px; width: 28px; display: grid; place-items: center; border: 0; border-radius: var(--r-4); background: transparent; color: var(--tekst-drugorzedny); cursor: pointer; }
+.pole-daty__przycisk:hover:not(:disabled) { background: var(--tlo-wyciszone); color: var(--tekst); }
+.pole-daty__przycisk:focus-visible { outline: 2px solid var(--akcent); outline-offset: -2px; }
+.pole-daty__kalendarz { position: absolute; z-index: 60; top: calc(100% + 4px); left: 0; width: 264px; padding: var(--o-8); background: var(--tlo-powierzchni); border: 1px solid var(--linia-mocna); border-radius: var(--r-8); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16); }
+.pole-daty__nawigacja { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--o-6); }
+.pole-daty__miesiac { font-weight: 600; font-size: 14px; }
+.pole-daty__strzalka { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid transparent; border-radius: var(--r-4); background: transparent; cursor: pointer; color: var(--tekst); }
+.pole-daty__strzalka:hover, .pole-daty__strzalka:focus-visible { border-color: var(--linia); background: var(--tlo-aplikacji); }
+.pole-daty__siatka { display: grid; gap: 2px; }
+.pole-daty__wiersz { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.pole-daty__wiersz > span { display: contents; }
+.pole-daty__dzien-tyg { font-size: 11px; text-align: center; color: var(--tekst-wyciszony); font-weight: 600; padding: 2px 0; }
+.pole-daty__dzien { height: 32px; border: 1px solid transparent; border-radius: var(--r-4); background: transparent; font: inherit; font-size: 13px; cursor: pointer; color: var(--tekst); font-variant-numeric: tabular-nums; }
+.pole-daty__dzien:hover:not(:disabled) { background: var(--tlo-aplikacji); border-color: var(--linia); }
+.pole-daty__dzien:focus-visible { outline: 2px solid var(--akcent); outline-offset: 0; }
+.pole-daty__dzien--poza { color: var(--tekst-wyciszony); }
+.pole-daty__dzien--weekend { color: var(--stan-czerwony); }
+.pole-daty__dzien--poza.pole-daty__dzien--weekend { color: var(--tekst-wyciszony); }
+.pole-daty__dzien--dzis { border-color: var(--akcent); font-weight: 700; }
+.pole-daty__dzien--wybrany { background: var(--akcent) !important; color: var(--tekst-na-akcencie) !important; }
+.pole-daty__dzien:disabled { opacity: 0.35; cursor: not-allowed; }
+.pole-daty__stopka { display: flex; justify-content: space-between; margin-top: var(--o-6); font-size: 13px; }

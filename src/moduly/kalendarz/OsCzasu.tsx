@@ -9,7 +9,7 @@ import { BladApi } from "../../api/klient";
 import type { Harmonogram, Klient, ZadanieKalendarza, Zlecenie } from "../../api/typy";
 import { usePolaczenie } from "../../kontekst/Polaczenie";
 import { formatujDate } from "../../lib/formaty";
-import { Pole, Przycisk } from "../../ui";
+import { Pole, Przycisk, PoleDaty } from "../../ui";
 import { komunikatBledu, useOdswiezaniePoZdarzeniu } from "./dane";
 import { dodajDni, dzisIso, krotkaData, NAZWY_MIESIECY, roznicaDni } from "./daty";
 import { PanelZadania } from "./PanelZadania";
@@ -17,6 +17,7 @@ import { roznicaHarmonogramu, type RoznicaHarmonogramu } from "./roznice";
 import { useSzkic } from "./szkic";
 import { zakresZadania } from "./uklad";
 import { IkonaStanu, IkonaTypu, kolorTypu, NAZWY_ETAPOW, nazwaTypu } from "./wyglad";
+import { DZIEN, liczba, ZADANIE } from "../../lib/odmiana";
 
 interface FormularzTerminow {
   montaz_od: string;
@@ -318,7 +319,7 @@ export function OsCzasu() {
             {f && bledy && (
               <div className="os-czasu__pola">
                 <Pole etykieta="Początek montażu" id="os-montaz" blad={bledy.montaz_od}>
-                  <input id="os-montaz" type="date" value={f.montaz_od} onChange={(e) => szkic.zmien({ ...f, montaz_od: e.target.value })} />
+                  <PoleDaty id="os-montaz" wartosc={f.montaz_od} onZmiana={(v) => szkic.zmien({ ...f, montaz_od: v })} />
                 </Pole>
                 <Pole etykieta="Składanie na warsztacie (dni)" id="os-warsztat" blad={bledy.czas_warsztat_dni}>
                   <input id="os-warsztat" type="number" min={0} max={365} value={f.czas_warsztat_dni} onChange={(e) => szkic.zmien({ ...f, czas_warsztat_dni: e.target.value })} />
@@ -364,7 +365,7 @@ export function OsCzasu() {
                     <li key={p.id} style={{ "--kolor": kolorTypu(p.typ) } as CSSProperties}>
                       <IkonaTypu typ={p.typ} rozmiar={12} />
                       <span>
-                        {p.tytul}: {krotkaData(p.z.od)} → <strong>{krotkaData(p.na.od)}</strong> ({p.dni > 0 ? `+${p.dni}` : p.dni} dni)
+                        {p.tytul}: {krotkaData(p.z.od)} → <strong>{krotkaData(p.na.od)}</strong> ({p.dni > 0 ? "+" : ""}{liczba(p.dni, DZIEN)})
                       </span>
                     </li>
                   ))}
@@ -466,12 +467,12 @@ export function OsCzasu() {
                   </WierszOsi>
                 )}
                 {warsztat && (
-                  <WierszOsi etykieta="Składanie na warsztacie" typ="warsztat" podpis={zlecenie.czas_warsztat_dni ? `${zlecenie.czas_warsztat_dni} dni` : undefined}>
+                  <WierszOsi etykieta="Składanie na warsztacie" typ="warsztat" podpis={zlecenie.czas_warsztat_dni ? liczba(zlecenie.czas_warsztat_dni, DZIEN) : undefined}>
                     {element(warsztat)}
                   </WierszOsi>
                 )}
                 {montaz && (
-                  <WierszOsi etykieta="Montaż" typ="montaz" podpis={zlecenie.czas_montazu_dni ? `${zlecenie.czas_montazu_dni} dni` : undefined}>
+                  <WierszOsi etykieta="Montaż" typ="montaz" podpis={zlecenie.czas_montazu_dni ? liczba(zlecenie.czas_montazu_dni, DZIEN) : undefined}>
                     {element(montaz)}
                   </WierszOsi>
                 )}
@@ -483,7 +484,7 @@ export function OsCzasu() {
                   </WierszOsi>
                 )}
                 {pozostale.length > 0 && (
-                  <WierszOsi etykieta="Klient, płatności, inne" typ="klient" podpis={`${pozostale.length} zadań`}>
+                  <WierszOsi etykieta="Klient, płatności, inne" typ="klient" podpis={liczba(pozostale.length, ZADANIE)}>
                     {pozostale.map((z) => (
                       element(z, `${nazwaTypu(z.typ)}: ${z.tytul}`)
                     ))}

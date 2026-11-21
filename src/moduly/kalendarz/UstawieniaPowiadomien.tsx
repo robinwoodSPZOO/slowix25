@@ -25,6 +25,8 @@ export function UstawieniaPowiadomien() {
   const { api } = usePolaczenie();
   const [u, ustawU] = useState(wczytajUstawieniaPowiadomien);
   const [progi, ustawProgi] = useState(u.dniPrzed.join(", "));
+  const [godzOd, ustawGodzOd] = useState(u.godzinaPodsumowania);
+  const [godzDo, ustawGodzDo] = useState(u.koniecPracy);
   const [podglad, ustawPodglad] = useState<Powiadomienie[] | null>(null);
   const [komunikat, ustawKomunikat] = useState<string | null>(null);
   const zmien = (n: typeof u) => {
@@ -46,12 +48,32 @@ export function UstawieniaPowiadomien() {
           <label className="przelacznik">
             <input type="checkbox" checked={u.podsumowanie} onChange={(e) => zmien({ ...u, podsumowanie: e.target.checked })} /> Poranne podsumowanie dnia
           </label>
-          <Pole etykieta="o godzinie" id="godz-podsumowania" pomoc="Od tej godziny przychodzą też przypomnienia">
+          <Pole etykieta="o godzinie (początek pracy)" id="godz-podsumowania" pomoc="Od tej godziny przychodzą też przypomnienia i alerty" blad={poprawnaGodzina(godzOd) ? null : "Wpisz godzinę GG:MM, np. 07:30"}>
             <input
               id="godz-podsumowania"
-              type="time"
-              value={u.godzinaPodsumowania}
-              onChange={(e) => poprawnaGodzina(e.target.value) && zmien({ ...u, godzinaPodsumowania: e.target.value })}
+              inputMode="numeric"
+              className="wejscie--godzina"
+              value={godzOd}
+              maxLength={5}
+              placeholder="07:30"
+              onChange={(e) => {
+                ustawGodzOd(e.target.value);
+                if (poprawnaGodzina(e.target.value)) zmien({ ...u, godzinaPodsumowania: e.target.value });
+              }}
+            />
+          </Pole>
+          <Pole etykieta="koniec pracy" id="godz-koniec" pomoc="Później alerty czekają do rana i trafiają do podsumowania" blad={poprawnaGodzina(godzDo) ? null : "Wpisz godzinę GG:MM, np. 18:00"}>
+            <input
+              id="godz-koniec"
+              inputMode="numeric"
+              className="wejscie--godzina"
+              value={godzDo}
+              maxLength={5}
+              placeholder="18:00"
+              onChange={(e) => {
+                ustawGodzDo(e.target.value);
+                if (poprawnaGodzina(e.target.value)) zmien({ ...u, koniecPracy: e.target.value });
+              }}
             />
           </Pole>
         </div>
@@ -72,12 +94,12 @@ export function UstawieniaPowiadomien() {
           </Pole>
         </div>
         <label className="przelacznik">
-          <input type="checkbox" checked={u.alertPomaranczowy} onChange={(e) => zmien({ ...u, alertPomaranczowy: e.target.checked })} /> Alert, gdy zadanie zrobi się
-          pomarańczowe („zbliżamy się do krytycznego momentu”)
+          <input type="checkbox" checked={u.alertPomaranczowy} onChange={(e) => zmien({ ...u, alertPomaranczowy: e.target.checked })} /> Alert (w godzinach pracy), gdy
+          zadanie zrobi się pomarańczowe („zbliżamy się do krytycznego momentu”)
         </label>
         <label className="przelacznik">
-          <input type="checkbox" checked={u.alertCzerwony} onChange={(e) => zmien({ ...u, alertCzerwony: e.target.checked })} /> Alert, gdy zadanie zrobi się czerwone (po
-          terminie krytycznym)
+          <input type="checkbox" checked={u.alertCzerwony} onChange={(e) => zmien({ ...u, alertCzerwony: e.target.checked })} /> Alert (w godzinach pracy), gdy zadanie
+          zrobi się czerwone (po terminie krytycznym)
         </label>
         <div>
           <span className="pole__etykieta">Wycisz typy zadań</span>

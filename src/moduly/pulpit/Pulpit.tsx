@@ -15,6 +15,7 @@ import { useWykonanie } from "../kalendarz/PanelZadania";
 import { EtykietaStanu, IkonaTypu, kolorTypu, NAZWY_ETAPOW, nazwaTypu, STANY } from "../kalendarz/wyglad";
 import "../kalendarz/kalendarz.css";
 import "./pulpit.css";
+import { DZIEN, liczba } from "../../lib/odmiana";
 
 const ETAPY_TABLICY = ["umowa", "pomiar", "rysunki", "zamowienia", "warsztat", "montaz", "odbior"] as const;
 
@@ -227,7 +228,7 @@ function PulpitKalendarza() {
                 <li key={i} style={{ "--kolor": kolorTypu(k.typ) } as CSSProperties} className="kolizja">
                   <IkonaTypu typ={k.typ} rozmiar={13} />
                   <span>
-                    <strong>{k.typ === "montaz" ? "Montaż" : "Warsztat"}</strong> {formatujDate(k.od)}–{formatujDate(k.do)} ({roznicaDni(k.od, k.do) + 1} dni):{" "}
+                    <strong>{k.typ === "montaz" ? "Montaż" : "Warsztat"}</strong> {formatujDate(k.od)}–{formatujDate(k.do)} ({liczba(roznicaDni(k.od, k.do) + 1, DZIEN)}):{" "}
                     <Link to={`/kalendarz/zlecenie/${k.zlecenie_a}`}>{k.zlecenie_a_nazwa}</Link> i <Link to={`/kalendarz/zlecenie/${k.zlecenie_b}`}>{k.zlecenie_b_nazwa}</Link>
                     {k.harmonogram_nieaktualny && " (harmonogram nieaktualny)"}
                   </span>

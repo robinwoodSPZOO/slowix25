@@ -14,6 +14,7 @@ import { PanelZadania, useWykonanie } from "../kalendarz/PanelZadania";
 import { EtykietaStanu, kolorTypu, STANY } from "../kalendarz/wyglad";
 import "../kalendarz/kalendarz.css";
 import "./zamowienia.css";
+import { DOSTAWA, liczba, odmiana } from "../../lib/odmiana";
 
 type Zakladka = "do_zamowienia" | "zamowione";
 const FILTRY_STANU: (StanOstrzezenia | "wszystkie")[] = ["wszystkie", "czerwony", "pomaranczowy", "zolty", "spokojnie"];
@@ -258,7 +259,7 @@ export function Zamowienia() {
                 <div className="komunikat-stanu stan-tlo--czerwony" role="note">
                   <TriangleAlert size={16} aria-hidden />
                   <span>
-                    {zagrozone} {zagrozone === 1 ? "dostawa może nie zdążyć" : "dostaw może nie zdążyć"} przed składaniem na warsztacie – skontaktuj się z dostawcą.
+                    {liczba(zagrozone, DOSTAWA)} {odmiana(zagrozone, ["może", "mogą", "może"])} nie zdążyć przed składaniem na warsztacie – skontaktuj się z dostawcą.
                   </span>
                 </div>
               )}

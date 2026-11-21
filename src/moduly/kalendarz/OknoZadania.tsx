@@ -4,7 +4,7 @@ import { useState } from "react";
 import { CircleAlert, History } from "lucide-react";
 import type { DaneZadaniaRecznego, ZadanieKalendarza, Zlecenie } from "../../api/typy";
 import { usePolaczenie } from "../../kontekst/Polaczenie";
-import { Okno, Pole, Przycisk } from "../../ui";
+import { Okno, Pole, Przycisk, PoleDaty } from "../../ui";
 import { komunikatBledu } from "./dane";
 import { poprawnaData } from "./daty";
 import { useSzkic } from "./szkic";
@@ -132,10 +132,10 @@ export function OknoZadania({
           <input id="zad-tytul" value={f.tytul} maxLength={300} autoFocus onChange={(e) => ustaw("tytul", e.target.value)} />
         </Pole>
         <Pole etykieta="Data (od)" id="zad-od" blad={proba ? bledy.data_od : null}>
-          <input id="zad-od" type="date" value={f.data_od} onChange={(e) => ustaw("data_od", e.target.value)} />
+          <PoleDaty id="zad-od" wartosc={f.data_od} onZmiana={(v) => ustaw("data_od", v)} />
         </Pole>
         <Pole etykieta="Do (opcjonalnie, zadanie wielodniowe)" id="zad-do" blad={bledy.data_do}>
-          <input id="zad-do" type="date" value={f.data_do} min={f.data_od} onChange={(e) => ustaw("data_do", e.target.value)} />
+          <PoleDaty id="zad-do" wartosc={f.data_do} min={f.data_od} onZmiana={(v) => ustaw("data_do", v)} />
         </Pole>
         <Pole etykieta="Uwagi" id="zad-uwagi" className="pole--szerokie">
           <textarea id="zad-uwagi" rows={3} value={f.uwagi} onChange={(e) => ustaw("uwagi", e.target.value)} />

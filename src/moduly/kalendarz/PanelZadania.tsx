@@ -8,10 +8,11 @@ import { BladApi } from "../../api/klient";
 import type { OpisWierszaSpecyfikacji, Wykonanie, ZadanieKalendarza } from "../../api/typy";
 import { usePolaczenie } from "../../kontekst/Polaczenie";
 import { formatujDate } from "../../lib/formaty";
-import { Okno, Pole, Przycisk } from "../../ui";
+import { Okno, Pole, Przycisk, PoleDaty } from "../../ui";
 import { komunikatBledu } from "./dane";
 import { poprawnaData, roznicaDni, wzgledny } from "./daty";
 import { EtykietaStanu, IkonaTypu, kolorTypu, nazwaTypu } from "./wyglad";
+import { DZIEN, liczba, POZYCJA } from "../../lib/odmiana";
 
 const STATUSY_MATERIALU: Record<string, string> = {
   do_zamowienia: "Do zamówienia",
@@ -264,7 +265,7 @@ export function PanelZadania({
           <CalendarClock size={16} aria-hidden />
           <span>
             <strong>Nowy możliwy termin montażu: {formatujDate(z.stan.nowy_termin_montazu)}</strong>
-            {z.stan.przesuniecie_montazu_dni ? ` (przesunięcie o ${z.stan.przesuniecie_montazu_dni} dni)` : ""}. Zamów jak najszybciej i
+            {z.stan.przesuniecie_montazu_dni ? ` (przesunięcie o ${liczba(z.stan.przesuniecie_montazu_dni, DZIEN)})` : ""}. Zamów jak najszybciej i
             uzgodnij z klientem nowy termin (aneks do umowy).
           </span>
         </div>
@@ -282,8 +283,8 @@ export function PanelZadania({
         <div className="komunikat-stanu stan-tlo--zolty" role="note">
           <Lock size={16} aria-hidden />
           <span>
-            Czeka na potwierdzenie klienta{zam.potwierdzic_do ? ` do ${formatujDate(zam.potwierdzic_do)}` : ""} – w specyfikacji umowy jest{" "}
-            {zam.wiersze_do_potwierdzenia.length} {zam.wiersze_do_potwierdzenia.length === 1 ? "pozycja" : "pozycji"} „do potwierdzenia”.
+            Czeka na potwierdzenie klienta{zam.potwierdzic_do ? ` do ${formatujDate(zam.potwierdzic_do)}` : ""} – w specyfikacji umowy {zam.wiersze_do_potwierdzenia.length === 1 ? "jest" : "są"}{" "}
+            {liczba(zam.wiersze_do_potwierdzenia.length, POZYCJA)} „do potwierdzenia”.
           </span>
         </div>
       )}
@@ -342,7 +343,7 @@ export function PanelZadania({
             }}
           >
             <Pole etykieta="Data wykonania" id="data-wykonania" blad={bladDaty(dataWyk)}>
-              <input id="data-wykonania" type="date" value={dataWyk} max={dzis} onChange={(e) => ustawDataWyk(e.target.value)} />
+              <PoleDaty id="data-wykonania" wartosc={dataWyk} max={dzis} onZmiana={(v) => ustawDataWyk(v)} />
             </Pole>
             <Przycisk wariant="glowny" type="submit" ikona={PackageCheck} disabled={zapisywanie || !!bladDaty(dataWyk)}>
               Oznacz jako wykonane
@@ -359,10 +360,10 @@ export function PanelZadania({
           >
             <div className="pola-obok">
               <Pole etykieta="Data zamówienia" id="data-zamowienia" blad={bladDaty(dataWyk)}>
-                <input id="data-zamowienia" type="date" value={dataWyk} max={dzis} onChange={(e) => ustawDataWyk(e.target.value)} />
+                <PoleDaty id="data-zamowienia" wartosc={dataWyk} max={dzis} onZmiana={(v) => ustawDataWyk(v)} />
               </Pole>
               <Pole etykieta="Data dostawy (jeśli już jest)" id="data-dostawy" blad={bladDaty(dataDostawy, true)}>
-                <input id="data-dostawy" type="date" value={dataDostawy} max={dzis} onChange={(e) => ustawDataDostawy(e.target.value)} />
+                <PoleDaty id="data-dostawy" wartosc={dataDostawy} max={dzis} onZmiana={(v) => ustawDataDostawy(v)} />
               </Pole>
             </div>
             <Przycisk wariant="glowny" type="submit" ikona={ShoppingCart} disabled={zapisywanie || !!bladDaty(dataWyk) || !!bladDaty(dataDostawy, true)}>
@@ -380,7 +381,7 @@ export function PanelZadania({
                 }}
               >
                 <Pole etykieta="Data dostawy" id="data-dostawy-2" blad={dataDostawy ? bladDaty(dataDostawy) : null}>
-                  <input id="data-dostawy-2" type="date" value={dataDostawy} max={dzis} onChange={(e) => ustawDataDostawy(e.target.value)} />
+                  <PoleDaty id="data-dostawy-2" wartosc={dataDostawy} max={dzis} onZmiana={(v) => ustawDataDostawy(v)} />
                 </Pole>
                 <Przycisk wariant="glowny" type="submit" ikona={PackageCheck} disabled={zapisywanie || !dataDostawy || !!bladDaty(dataDostawy)}>
                   Zapisz dostawę

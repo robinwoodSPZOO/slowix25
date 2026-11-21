@@ -8,17 +8,16 @@ import type { ZadanieKalendarza } from "../api/typy";
 import type { KlientApi } from "../api/klient";
 import { usePolaczenie } from "../kontekst/Polaczenie";
 import { dodajDni, dzisIso } from "../moduly/kalendarz/daty";
-import { normalizujUstawienia, wyznaczPowiadomienia, type HistoriaPowiadomien, type Powiadomienie, type UstawieniaPowiadomien } from "./powiadomienia";
+import { normalizujHistorie, normalizujUstawienia, wyznaczPowiadomienia, type HistoriaPowiadomien, type Powiadomienie, type UstawieniaPowiadomien } from "./powiadomienia";
 import { pokazPowiadomienie } from "./tauri";
 
 const KLUCZ_USTAWIEN = "robinwood:powiadomienia:ustawienia";
 const KLUCZ_HISTORII = "robinwood:powiadomienia:historia";
 const CO_ILE_POBIERAC_MS = 5 * 60 * 1000;
-const MAKS_NARAZ = 5;
 
 export function wczytajUstawieniaPowiadomien(): UstawieniaPowiadomien {
   try {
-    return normalizujUstawienia(JSON.parse(localStorage.getItem(KLUCZ_USTAWIEN) ?? "null") as Partial<UstawieniaPowiadomien> | null);
+    return normalizujUstawienia(JSON.parse(localStorage.getItem(KLUCZ_USTAWIEN) ?? "null"));
   } catch {
     return normalizujUstawienia(null);
   }
@@ -32,10 +31,10 @@ export function zapiszUstawieniaPowiadomien(u: UstawieniaPowiadomien): void {
   }
 }
 
-function wczytajHistorie(): HistoriaPowiadomien {
+/** Historia z pamięci lokalnej – zawsze poprawnego kształtu (uszkodzone wpisy są pomijane). */
+export function wczytajHistorie(): HistoriaPowiadomien {
   try {
-    const h = JSON.parse(localStorage.getItem(KLUCZ_HISTORII) ?? "{}") as unknown;
-    return h && typeof h === "object" ? (h as HistoriaPowiadomien) : {};
+    return normalizujHistorie(JSON.parse(localStorage.getItem(KLUCZ_HISTORII) ?? "{}"));
   } catch {
     return {};
   }
@@ -77,16 +76,43 @@ export async function podgladPowiadomien(api: KlientApi): Promise<Powiadomienie[
   return wyznaczPowiadomienia(z, u, terazLokalnie(), wczytajHistorie()).powiadomienia;
 }
 
+/**
+ * Jeden krok planera: wylicza i pokazuje powiadomienia, zapisuje historię (tylko pokazane).
+ * Nie rzuca wyjątków – błąd jednego kroku nie zatrzymuje planera (następny za minutę).
+ */
+export async function krokPlanera(
+  zadania: ZadanieKalendarza[],
+  u: UstawieniaPowiadomien,
+  pokaz: (tytul: string, tresc: string) => Promise<void> = pokazPowiadomienie,
+  teraz = terazLokalnie(),
+): Promise<Powiadomienie[]> {
+  try {
+    const { powiadomienia, historia } = wyznaczPowiadomienia(zadania, u, teraz, wczytajHistorie());
+    zapiszHistorie(historia);
+    for (const p of powiadomienia) {
+      try {
+        await pokaz(p.tytul, p.tresc);
+      } catch {
+        /* powiadomienie się nie pokazało – nie ponawiamy, żeby nie dublować */
+      }
+    }
+    return powiadomienia;
+  } catch (e) {
+    console.error("Planer powiadomień – błąd kroku (spróbuje ponownie za minutę):", e);
+    return [];
+  }
+}
+
 /** Hook planera – montowany raz, w oknie głównym. */
 export function usePlanerPowiadomien(): void {
-  const { api, ostatnieZdarzenie } = usePolaczenie();
+  const { api, ostatnieZdarzenie, wznowienia } = usePolaczenie();
   const zadania = useRef<ZadanieKalendarza[] | null>(null);
   const pobrano = useRef(0);
   const nieaktualne = useRef(true);
 
   useEffect(() => {
     nieaktualne.current = true;
-  }, [ostatnieZdarzenie]);
+  }, [ostatnieZdarzenie, wznowienia]);
 
   useEffect(() => {
     if (!api) return;
@@ -104,15 +130,7 @@ export function usePlanerPowiadomien(): void {
         return; // brak serwera – spróbujemy za minutę (historia bez zmian)
       }
       if (!aktywny || !zadania.current) return;
-      const { powiadomienia, historia } = wyznaczPowiadomienia(zadania.current, u, terazLokalnie(), wczytajHistorie());
-      zapiszHistorie(historia);
-      for (const p of powiadomienia.slice(0, MAKS_NARAZ)) {
-        try {
-          await pokazPowiadomienie(p.tytul, p.tresc);
-        } catch {
-          /* powiadomienie się nie pokazało – nie ponawiamy, żeby nie dublować */
-        }
-      }
+      await krokPlanera(zadania.current, u);
     };
     const start = setTimeout(() => void krok(), 5000);
     const t = setInterval(() => void krok(), 60_000);

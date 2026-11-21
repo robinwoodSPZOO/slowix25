@@ -39,6 +39,7 @@ h3 { font-size: var(--rozmiar-h3); font-weight: var(--waga-pogrubiona); }
 .menu .stan { margin-top: auto; padding: var(--o-12); font-size: var(--rozmiar-mikro); color: #9a978f; }
 .tresc { flex: 1; min-width: 0; padding: var(--o-20) var(--o-24); overflow: auto; }
 .tresc--pelna { padding: 0; overflow: hidden; }
+.pasek-przerwy { position: sticky; top: calc(-1 * var(--o-20)); z-index: 20; display: flex; align-items: center; gap: var(--o-6); margin: calc(-1 * var(--o-20)) calc(-1 * var(--o-24)) var(--o-12); padding: var(--o-6) var(--o-24); background: var(--stan-zolty-tlo); color: var(--tekst); font-size: 13px; border-bottom: 1px solid var(--stan-zolty); }
 
 /* --- Elementy wspólne z Fazy 0 (klienci, ustawienia) --- */
 .komunikat { max-width: 560px; }
