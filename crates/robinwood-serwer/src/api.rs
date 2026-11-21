@@ -6,6 +6,7 @@
 //! * `GET  /api/v1/slowniki`, `GET /api/v1/slowniki/{kod}`
 //! * `GET  /api/v1/kategorie-materialow`
 //! * `GET  /api/v1/zdarzenia?klucz=...` – WebSocket ze zdarzeniami o zmianach
+//! * kalendarz / silnik terminów – trasy w [`crate::api_kalendarz`]
 //!
 //! Klucz dostępu: nagłówek `Authorization: Bearer <klucz>` (lub parametr `klucz` dla WebSocket).
 
@@ -57,6 +58,7 @@ pub fn router(stan: StanApi) -> Router {
         .route("/slowniki/{kod}", get(pozycje_slownika))
         .route("/kategorie-materialow", get(kategorie_materialow))
         .route("/zdarzenia", get(zdarzenia_ws))
+        .merge(crate::api_kalendarz::trasy())
         .route_layer(middleware::from_fn_with_state(stan.clone(), sprawdz_klucz));
 
     let api = Router::new().route("/status", get(status)).merge(chronione);

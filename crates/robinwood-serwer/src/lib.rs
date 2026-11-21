@@ -5,11 +5,14 @@
 //! samodzielny program `robinwood-serwer` (np. na mini PC bez interfejsu).
 
 pub mod api;
+pub mod api_kalendarz;
 pub mod baza;
 pub mod bledy;
+pub mod kalendarz;
 pub mod klienci;
 pub mod mdns;
 pub mod slowniki;
+pub mod terminarz;
 pub mod zdarzenia;
 
 use std::net::SocketAddr;
