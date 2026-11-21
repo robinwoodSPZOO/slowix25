@@ -1,0 +1,98 @@
+/* Moduł Oferty */
+.karta { background: var(--tlo-powierzchni); border: 1px solid var(--linia); border-radius: var(--r-8); box-shadow: var(--cien-1); overflow: hidden; }
+.wejscie--maly { height: 26px; font-size: var(--rozmiar-etykieta); padding: 0 var(--o-6); }
+
+/* Lista */
+.lista-ofert { display: flex; flex-direction: column; gap: var(--o-16); }
+.lista-ofert__naglowek { display: flex; align-items: center; justify-content: space-between; }
+.lista-ofert__naglowek h1 { margin: 0; }
+.lista-ofert__akcje { display: flex; gap: var(--o-8); }
+.lista-ofert__filtry { display: flex; flex-wrap: wrap; gap: var(--o-12); align-items: center; }
+.lista-ofert__szukaj { position: relative; display: flex; align-items: center; flex: 1; min-width: 220px; max-width: 360px; }
+.lista-ofert__szukaj svg { position: absolute; left: 10px; color: var(--tekst-wyciszony); }
+.lista-ofert__szukaj input { width: 100%; padding-left: 30px; }
+
+/* Ekran oferty: pełna wysokość, bez marginesów treści */
+.ekran-oferty {
+  display: flex; flex-direction: column;
+  margin: calc(-1 * var(--o-20)) calc(-1 * var(--o-24));
+  height: 100vh;
+}
+.ekran-oferty__ladowanie { padding: var(--o-24); }
+.ekran-oferty__naglowek {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--o-12); flex-wrap: wrap;
+  padding: var(--o-12) var(--o-16);
+  background: var(--tlo-powierzchni); border-bottom: 1px solid var(--linia);
+}
+.ekran-oferty__tytul { display: flex; align-items: center; gap: var(--o-8); min-width: 0; }
+.ekran-oferty__numer { display: flex; align-items: center; gap: var(--o-8); }
+.ekran-oferty__numer h1 { margin: 0; font-size: var(--rozmiar-h2); }
+.ekran-oferty__meta { display: flex; align-items: center; gap: var(--o-6); font-size: var(--rozmiar-etykieta); color: var(--tekst-drugorzedny); margin-top: var(--o-2); }
+.ekran-oferty__meta select { max-width: 240px; }
+.ekran-oferty__narzedzia { display: flex; align-items: center; gap: var(--o-6); flex-wrap: wrap; }
+.ekran-oferty__pole { display: flex; flex-direction: column; gap: 1px; font-size: var(--rozmiar-mikro); color: var(--tekst-wyciszony); }
+.ekran-oferty__separator { width: 1px; align-self: stretch; background: var(--linia); margin: 0 var(--o-4); }
+.ekran-oferty__blad { margin: var(--o-8) var(--o-16) 0; }
+.ekran-oferty__tresc { flex: 1; min-height: 0; }
+
+@media (max-width: 1500px) {
+  .ekran-oferty__naglowek .przycisk { padding: 0 var(--o-8); }
+}
+
+/* Panel po prawej */
+.panel-oferty { display: flex; flex-direction: column; min-height: 100%; }
+.panel-oferty__zakladki { position: sticky; top: 0; z-index: 2; padding: var(--o-12) var(--o-12) var(--o-8); background: var(--tlo-powierzchni-2); border-bottom: 1px solid var(--linia); }
+.panel-wyceny, .panel-naglowka, .panel-zdjec { display: flex; flex-direction: column; gap: var(--o-12); padding: var(--o-12); }
+.panel-wyceny__grupa { display: flex; flex-direction: column; gap: var(--o-6); }
+.panel-wyceny__rzad { flex-direction: row; gap: var(--o-16); flex-wrap: wrap; }
+.panel-wyceny__rzad > div { display: flex; flex-direction: column; gap: var(--o-4); }
+.panel-wyceny__sekcje { display: flex; flex-direction: column; gap: var(--o-8); }
+.panel-wyceny__sekcja { background: var(--tlo-powierzchni); border: 1px solid var(--linia); border-radius: var(--r-8); padding: var(--o-8); display: flex; flex-direction: column; gap: var(--o-4); }
+.panel-wyceny__wiersz { display: flex; align-items: center; justify-content: space-between; gap: var(--o-8); min-height: 28px; font-size: var(--rozmiar-tabela); }
+.panel-wyceny__wiersz--sekcja { font-weight: var(--waga-srednia); }
+.panel-wyceny__wiersz--czesc { padding-left: var(--o-12); color: var(--tekst-drugorzedny); }
+.panel-wyceny__wiersz--wyciszony { color: var(--tekst-wyciszony); font-size: var(--rozmiar-etykieta); min-height: 22px; }
+.panel-wyceny__suma-sekcji { border-top: 1px dashed var(--linia); padding-top: var(--o-4); font-weight: var(--waga-pogrubiona); }
+.panel-wyceny__nazwa { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-flex; align-items: center; gap: var(--o-4); }
+.panel-wyceny__kwota { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.panel-wyceny__podsumowanie { background: var(--tlo-powierzchni); border: 1px solid var(--linia); border-radius: var(--r-8); padding: var(--o-8) var(--o-12); display: flex; flex-direction: column; gap: var(--o-2); }
+.panel-wyceny__brutto { display: flex; justify-content: space-between; align-items: baseline; border-top: 1px solid var(--linia); margin-top: var(--o-6); padding-top: var(--o-8); }
+.panel-wyceny__brutto span { font-weight: var(--waga-pogrubiona); }
+.panel-wyceny__brutto strong { font-size: var(--rozmiar-h2); color: var(--akcent); font-variant-numeric: tabular-nums; }
+.panel-wyceny__ostrzezenia { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--o-4); }
+.panel-wyceny__wewnetrzne { border-top: 1px solid var(--linia); padding-top: var(--o-8); display: flex; flex-direction: column; gap: var(--o-8); align-items: stretch; }
+.panel-wyceny__wewnetrzne > .przycisk { align-self: flex-start; }
+.pole-kwoty { position: relative; display: inline-flex; align-items: center; width: 136px; flex: none; }
+.pole-kwoty input { width: 100%; padding-right: 26px; height: 28px; font-size: var(--rozmiar-tabela); }
+.pole-kwoty input[aria-invalid="true"] { border-color: var(--stan-czerwony); }
+.pole-kwoty__waluta { position: absolute; right: 8px; font-size: var(--rozmiar-mikro); color: var(--tekst-wyciszony); pointer-events: none; }
+
+.panel-naglowka__dwie { display: grid; grid-template-columns: 1fr 1fr; gap: var(--o-8); }
+.panel-naglowka__dodaj { display: flex; gap: var(--o-6); align-items: center; flex-wrap: wrap; }
+.lista-klauzul { margin: 0; padding-left: var(--o-20); display: flex; flex-direction: column; gap: var(--o-6); }
+.lista-klauzul li { font-size: var(--rozmiar-etykieta); }
+.lista-klauzul textarea { width: 100%; height: auto; padding: var(--o-4) var(--o-6); font-size: var(--rozmiar-etykieta); resize: vertical; }
+.lista-klauzul__akcje { display: flex; gap: var(--o-2); justify-content: flex-end; }
+
+.panel-zdjec__dodaj { display: flex; flex-direction: column; gap: var(--o-6); align-items: flex-start; }
+.panel-zdjec__lista { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--o-8); }
+.panel-zdjec__zdjecie { display: grid; grid-template-columns: 88px 1fr auto; gap: var(--o-8); align-items: center; background: var(--tlo-powierzchni); border: 1px solid var(--linia); border-radius: var(--r-8); padding: var(--o-6); }
+.panel-zdjec__zdjecie img { width: 88px; height: 66px; object-fit: cover; border-radius: var(--r-4); background: var(--tlo-wyciszone); }
+.panel-zdjec__opis { display: flex; flex-direction: column; gap: var(--o-4); min-width: 0; }
+
+.porownanie__wybory { display: flex; gap: var(--o-16); }
+.porownanie__wybor { display: flex; flex-direction: column; gap: var(--o-4); }
+.porownanie__lista { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--o-8); }
+.porownanie__pozycja { border: 1px solid var(--linia); border-radius: var(--r-8); padding: var(--o-8); }
+.porownanie__naglowek { display: flex; gap: var(--o-8); align-items: center; flex-wrap: wrap; }
+.porownanie__poziom { font-size: var(--rozmiar-mikro); color: var(--tekst-wyciszony); text-transform: uppercase; letter-spacing: 0.04em; }
+.porownanie__pola { margin-top: var(--o-6); }
+.porownanie__pola th { position: static; width: 160px; background: none; }
+.porownanie__przed { color: var(--stan-czerwony); text-decoration: line-through; }
+.porownanie__po { color: var(--stan-spokojnie); }
+
+.ustawienia-ofert { display: flex; flex-direction: column; gap: var(--o-12); max-width: 760px; align-items: flex-start; }
+.ustawienia-ofert h1 { margin: 0; }
+.ustawienia-ofert__formularz { display: flex; flex-direction: column; gap: var(--o-12); padding: var(--o-16); width: 100%; }
+.ustawienia-ofert__rzad { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--o-12); }
+.ustawienia-ofert__przyciski { display: flex; gap: var(--o-8); align-items: center; }

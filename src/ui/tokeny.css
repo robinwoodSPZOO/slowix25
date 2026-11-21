@@ -1,0 +1,106 @@
+/*
+ * Tokeny projektowe ROBINWOOD (Faza 2). Jedno źródło kolorów, typografii, odstępów i promieni
+ * dla wszystkich modułów. Kolory typów zadań kalendarza są ZAREZERWOWANE – nie używać ich
+ * do niczego innego (statusów, przycisków, wykresów).
+ */
+@import "@fontsource-variable/inter";
+
+:root {
+  /* --- Neutralne (ciepła szarość) --- */
+  --tlo-aplikacji: #f4f2ee;
+  --tlo-powierzchni: #ffffff;
+  --tlo-powierzchni-2: #faf9f6;
+  --tlo-wyciszone: #ece9e3;
+  --tlo-zaznaczenia: #e3ece8;
+  --linia: #dedad2;
+  --linia-mocna: #c8c3b8;
+  --tekst: #23211d;
+  --tekst-drugorzedny: #5e5a52;
+  --tekst-wyciszony: #8a857b;
+  --tekst-na-akcencie: #ffffff;
+
+  /* --- Pasek boczny --- */
+  --tlo-paska: #23262a;
+  --tlo-paska-aktywne: #343a3f;
+  --tekst-paska: #d6d3cc;
+  --tekst-paska-aktywny: #ffffff;
+
+  /* --- Akcent (ciemna zieleń) --- */
+  --akcent: #2d5e50;
+  --akcent-hover: #244c41;
+  --akcent-wcisniety: #1c3c33;
+  --akcent-jasny: #e3ece8;
+  --fokus: 0 0 0 3px rgba(45, 94, 80, 0.35);
+
+  /* --- Stany ostrzeżeń (zawsze z ikoną i tekstem) --- */
+  --stan-spokojnie: #2f6b3a;
+  --stan-spokojnie-tlo: #e6f1e7;
+  --stan-zolty: #7a5d00;
+  --stan-zolty-tlo: #fbf1cc;
+  --stan-pomaranczowy: #9a4a00;
+  --stan-pomaranczowy-tlo: #fde5cf;
+  --stan-czerwony: #a3261b;
+  --stan-czerwony-tlo: #f9dcd8;
+  --stan-neutralny: #5e5a52;
+  --stan-neutralny-tlo: #ece9e3;
+
+  /* --- Typy zadań kalendarza (zarezerwowane) --- */
+  --zadanie-montaz: #0072b2;
+  --zadanie-warsztat: #8a5a2b;
+  --zadanie-zamowienie: #00896a;
+  --zadanie-rysunki: #b8578f;
+  --zadanie-pomiar: #2b8fcb;
+
+  /* --- Typografia --- */
+  --font: "Inter Variable", Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  --rozmiar-h1: 24px;
+  --rozmiar-h2: 18px;
+  --rozmiar-h3: 15px;
+  --rozmiar-tekst: 14px;
+  --rozmiar-tabela: 13px;
+  --rozmiar-etykieta: 12px;
+  --rozmiar-mikro: 11px;
+  --waga-normalna: 400;
+  --waga-srednia: 500;
+  --waga-pogrubiona: 600;
+
+  /* --- Odstępy (skala 2–48) --- */
+  --o-2: 2px;
+  --o-4: 4px;
+  --o-6: 6px;
+  --o-8: 8px;
+  --o-12: 12px;
+  --o-16: 16px;
+  --o-20: 20px;
+  --o-24: 24px;
+  --o-32: 32px;
+  --o-40: 40px;
+  --o-48: 48px;
+
+  /* --- Promienie --- */
+  --r-4: 4px;
+  --r-6: 6px;
+  --r-8: 8px;
+  --r-12: 12px;
+
+  /* --- Cienie --- */
+  --cien-1: 0 1px 2px rgba(35, 33, 29, 0.06);
+  --cien-2: 0 4px 16px rgba(35, 33, 29, 0.12);
+  --cien-3: 0 12px 40px rgba(35, 33, 29, 0.22);
+
+  /* --- Wymiary układu --- */
+  --szer-paska: 208px;
+  --szer-drzewa: 300px;
+  --szer-panelu: 380px;
+  --wys-pola: 32px;
+  --wys-pola-tabeli: 28px;
+}
+
+@media (max-width: 1500px) {
+  :root {
+    --szer-paska: 160px;
+    --szer-drzewa: 224px;
+    --szer-panelu: 304px;
+  }
+}
