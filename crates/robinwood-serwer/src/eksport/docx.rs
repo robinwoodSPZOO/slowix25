@@ -58,7 +58,7 @@ fn wiersz_tabeli(w: &WierszDok, agd: bool) -> TableRow {
                 ),
         ];
     }
-    TableRow::new(k)
+    TableRow::new(k).cant_split()
 }
 
 fn wiersz_scalony(t: &str, kolumn: usize, tlo: &str, pogrub: bool, kursywa: bool) -> TableRow {
@@ -72,7 +72,8 @@ fn wiersz_scalony(t: &str, kolumn: usize, tlo: &str, pogrub: bool, kursywa: bool
     TableRow::new(vec![TableCell::new()
         .grid_span(kolumn)
         .shading(Shading::new().shd_type(ShdType::Clear).fill(tlo))
-        .add_paragraph(Paragraph::new().add_run(r))])
+        .add_paragraph(Paragraph::new().keep_next(true).add_run(r))])
+    .cant_split()
 }
 
 fn obrazy(mut d: Docx, obrazy: &[ObrazDok]) -> Docx {

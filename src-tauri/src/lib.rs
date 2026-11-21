@@ -123,7 +123,12 @@ fn zakoncz_aplikacje(app: AppHandle) {
 /// Zamknięcie okna / „Zakończ”: najpierw interfejs zapisuje niezapisane wiersze (zdarzenie),
 /// potem sam wywołuje `ukryj_glowne_okno` / `zakoncz_aplikacje`. Gdyby interfejs nie
 /// odpowiedział (np. jeszcze się ładuje), po `zapas` wykonujemy akcję mimo to.
-pub(crate) fn po_zapisie_szkicow(app: &AppHandle, zdarzenie: &str, zapas: Duration, akcja: fn(&AppHandle)) {
+pub(crate) fn po_zapisie_szkicow(
+    app: &AppHandle,
+    zdarzenie: &str,
+    zapas: Duration,
+    akcja: fn(&AppHandle),
+) {
     let wyslano = app.emit_to(zasobnik::OKNO_GLOWNE, zdarzenie, ()).is_ok();
     if !wyslano {
         akcja(app);
