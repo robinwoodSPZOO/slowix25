@@ -27,7 +27,7 @@ tower-http = { version = "0.6", features = ["cors", "trace"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
 mdns-sd = "0.13"
 rand = "0.8"
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 # Eksport ofert (Faza 2)
 docx-rs = "0.4"
 genpdf = { version = "0.2", features = ["images"] }

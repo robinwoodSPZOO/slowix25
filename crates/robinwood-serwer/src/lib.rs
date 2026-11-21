@@ -5,12 +5,14 @@
 //! samodzielny program `robinwood-serwer` (np. na mini PC bez interfejsu).
 
 pub mod api;
+pub mod api_kalendarz;
 pub mod api_oferty;
 pub mod baza;
 pub mod bledy;
 pub mod eksport;
 pub mod firma;
 pub mod formaty;
+pub mod kalendarz;
 pub mod klienci;
 pub mod limity;
 pub mod mdns;
@@ -20,6 +22,7 @@ pub mod roznice;
 pub mod slowniki;
 pub mod specyfikacje;
 pub mod szablony;
+pub mod terminarz;
 pub mod wejscie;
 pub mod wycena;
 pub mod zdarzenia;

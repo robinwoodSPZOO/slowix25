@@ -6,6 +6,7 @@
 //! * `GET  /api/v1/slowniki`, `GET /api/v1/slowniki/{kod}`
 //! * `GET  /api/v1/kategorie-materialow`
 //! * `GET  /api/v1/zdarzenia?klucz=...` – WebSocket ze zdarzeniami o zmianach
+//! * kalendarz / silnik terminów – trasy w [`crate::api_kalendarz`]
 //!
 //! * `POST /api/v1/klienci/{id}/przywroc` – cofnięcie usunięcia (miękkiego)
 //!
@@ -81,6 +82,7 @@ pub fn router(stan: StanApi) -> Router {
         .route("/zdarzenia", get(zdarzenia_ws))
         // Faza 2: specyfikacje, oferty, szablony, zdjęcia, eksport (crate::api_oferty)
         .merge(crate::api_oferty::trasy())
+        .merge(crate::api_kalendarz::trasy())
         .route_layer(middleware::from_fn_with_state(stan.clone(), sprawdz_klucz));
 
     let api = Router::new().route("/status", get(status)).merge(chronione);

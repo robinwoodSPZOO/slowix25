@@ -57,6 +57,13 @@ pub enum BladApi {
     /// 413: za duża treść żądania.
     #[error("{0}")]
     ZaDuzo(String),
+    /// Operacja wstrzymana do jawnego potwierdzenia (409), np. zamówienie materiału, na który
+    /// czekają wiersze specyfikacji „do potwierdzenia”. Odpowiedź zawiera `kod` i listę wierszy.
+    #[error("{komunikat}")]
+    Zablokowane {
+        komunikat: String,
+        wiersze_do_potwierdzenia: Vec<i64>,
+    },
     #[error("Brak lub nieprawidłowy klucz dostępu")]
     BrakDostepu,
     #[error("Błąd serwera: {0}")]
@@ -86,6 +93,7 @@ impl IntoResponse for BladApi {
             }
             BladApi::Konflikt { .. } => StatusCode::CONFLICT,
             BladApi::ZaDuzo(_) => StatusCode::PAYLOAD_TOO_LARGE,
+            BladApi::Zablokowane { .. } => StatusCode::CONFLICT,
             BladApi::BrakDostepu => StatusCode::UNAUTHORIZED,
             BladApi::Wewnetrzny(e) => {
                 tracing::error!("Błąd wewnętrzny: {e}");
@@ -101,6 +109,14 @@ impl IntoResponse for BladApi {
             }
         };
         let cialo = match &self {
+            BladApi::Zablokowane {
+                wiersze_do_potwierdzenia,
+                ..
+            } => json!({
+                "blad": self.to_string(),
+                "kod": "do_potwierdzenia",
+                "wiersze_do_potwierdzenia": wiersze_do_potwierdzenia,
+            }),
             BladApi::BledyPozycji { komunikat, bledy } => {
                 json!({ "blad": komunikat, "kod": "bledy_pozycji", "bledy": bledy })
             }
