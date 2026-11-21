@@ -605,8 +605,8 @@ mod testy {
     use super::*;
     use crate::baza::otworz_w_pamieci;
 
-    const SLOWNIKI: &str = include_str!("../tests/dane/slowniki-przyklad.json");
-    const SZABLONY: &str = include_str!("../tests/dane/szablony-mebli-przyklad.json");
+    const SLOWNIKI: &str = include_str!("../tests/przyklady/slowniki-przyklad.json");
+    const SZABLONY: &str = include_str!("../tests/przyklady/szablony-mebli-przyklad.json");
 
     #[test]
     fn kody_szablonow() {

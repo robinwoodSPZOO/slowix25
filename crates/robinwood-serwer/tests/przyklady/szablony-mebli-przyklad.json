@@ -1,0 +1,26 @@
+{
+  "_opis": "Fikcyjny przykład pliku szablonów mebli (format analityczny + jeden szablon w formacie wewnętrznym).",
+  "szablony": [
+    {
+      "typ_zabudowy": "kuchnia",
+      "liczba_dokumentow": 2,
+      "liczba_sekcji": 2,
+      "przykladowe_tytuly_sekcji": ["Zabudowa Kuchni Testowej", "Kuchnia"],
+      "typowe_czesci": [{ "czesc": "Szafki dolne", "sekcje": 2 }, { "czesc": "Szafki górne", "sekcje": 1 }],
+      "wiersze_materialowe": [
+        { "rodzaj": "Korpus", "udzial_sekcji": 0.9, "wystapienia": 2, "najczestsza_kategoria": "Płyta meblowa", "najczestszy_material": "Płyta Meblowa Producent A", "typowy_opis": "Kolor: do potwierdzenia" },
+        { "rodzaj": "Półki", "udzial_sekcji": 0.6, "wystapienia": 2, "najczestsza_kategoria": "Płyta meblowa", "najczestszy_material": "Płyta Meblowa Producent A", "typowy_opis": "" },
+        { "rodzaj": "Rzadki element", "udzial_sekcji": 0.1, "wystapienia": 1, "najczestsza_kategoria": "Inne", "najczestszy_material": "Coś", "typowy_opis": "" }
+      ],
+      "wyposazenie": [
+        { "rodzaj": "Szuflady", "udzial_sekcji": 0.8, "wystapienia": 2, "typowe_wyposazenie": ["Szuflada testowa"], "typowy_opis": "Kolor: biały" }
+      ]
+    },
+    {
+      "nazwa": "Regał testowy",
+      "tytul_sekcji": "Regał",
+      "czesci": ["Regał"],
+      "wiersze": [{ "podgrupa": "glowna", "rodzaj": "Korpus", "material": "Płyta Meblowa Producent A" }]
+    }
+  ]
+}

@@ -435,11 +435,11 @@ async fn pelny_scenariusz_oferty() {
 #[tokio::test]
 async fn import_slownikow_i_szablonow_przez_http() {
     let (app, _) = aplikacja().await;
-    let sl: Value = serde_json::from_str(include_str!("dane/slowniki-przyklad.json")).unwrap();
+    let sl: Value = serde_json::from_str(include_str!("przyklady/slowniki-przyklad.json")).unwrap();
     let r = ok(&app, "POST", "/api/v1/import/slowniki", Some(sl)).await;
     assert_eq!(r["dodane"]["dekor"], 2);
     let sz: Value =
-        serde_json::from_str(include_str!("dane/szablony-mebli-przyklad.json")).unwrap();
+        serde_json::from_str(include_str!("przyklady/szablony-mebli-przyklad.json")).unwrap();
     let r = ok(&app, "POST", "/api/v1/import/szablony-mebli", Some(sz)).await;
     assert_eq!(r["dodane"]["szablony"], 1);
     let p = ok(&app, "GET", "/api/v1/slowniki-podpowiedzi", None).await;

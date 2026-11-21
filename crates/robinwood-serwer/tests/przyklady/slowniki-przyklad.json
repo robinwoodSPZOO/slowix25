@@ -1,0 +1,60 @@
+{
+  "_opis": "Fikcyjny przykład pliku słowników w formacie analitycznym (do testów importu). Same dane testowe.",
+  "zrodlo": { "pliki_specyfikacji": 0, "wiersze_specyfikacji": 0 },
+  "rodzaje_elementow": [
+    { "nazwa": "Fronty", "wystapienia": 10, "dokumenty": 2, "grupa_dominujaca": "materialy", "warianty_zrodlowe": [{ "zapis": "Front", "wystapienia": 3 }] },
+    { "nazwa": "Zawiasy testowe", "wystapienia": 4, "dokumenty": 1, "grupa_dominujaca": "wyposazenie", "warianty_zrodlowe": [] }
+  ],
+  "materialy": [
+    {
+      "kategoria": "Płyta testowa laminowana",
+      "wystapienia": 12,
+      "dokumenty": 2,
+      "producenci": { "Producent A": 12 },
+      "typowe_opisy_materialu": [
+        { "zapis": "Płyta Meblowa Producent A", "wystapienia": 8 },
+        { "zapis": "Płyta HDF", "wystapienia": 2 }
+      ],
+      "dekory_kolory": [
+        { "kod": "T001", "producent": "Producent A", "nazwa_najpelniejsza": "T001 Dąb Testowy", "wystapienia": 3, "dokumenty": 1, "zapisy_zrodlowe": ["T001 Dąb Testowy"] },
+        { "kod": "T002", "producent": "Producent A", "nazwa_najpelniejsza": "T002 Biały Testowy", "wystapienia": 2, "dokumenty": 1, "zapisy_zrodlowe": [] }
+      ],
+      "kolory_bez_kodu": [],
+      "uzywane_jako": { "Korpus": 5 }
+    }
+  ],
+  "okucia_wyposazenie": {
+    "wg_producenta": [
+      { "producent": "Producent B", "wystapienia": 3, "dokumenty": 1, "systemy": [
+        { "system": "System 1", "wystapienia": 3, "dokumenty": 1, "typ": "Zawias", "przykladowe_zapisy": ["Zawias testowy z cichym domykiem", "Prowadnica testowa"] }
+      ] }
+    ],
+    "typy_wyposazenia": [{ "typ": "Zawias", "wystapienia": 3 }],
+    "bez_producenta": [
+      { "typ": "Uchwyt", "zapis": "Do ustalenia w dniu montażu", "wystapienia": 2 },
+      { "typ": "Uchwyt", "zapis": "", "wystapienia": 1 }
+    ],
+    "uchwyty_zapisy": [{ "zapis": "Uchwyt krawędziowy testowy", "wystapienia": 1 }],
+    "uchwyty_kolory": []
+  },
+  "oswietlenie_wlaczniki": {
+    "zapisy": [{ "wartosc": "Taśma LED testowa w profilu |", "wystapienia": 1 }],
+    "liczba_wierszy": 1,
+    "dokumenty": 1
+  },
+  "opis_i_statusy": {
+    "statusy": [{ "status": "Do potwierdzenia", "wystapienia": 3, "dokumenty": 1, "w_kolumnach": { "opis": 3 }, "warianty_zapisu": [] }],
+    "typowe_wartosci_opisu": [
+      { "wzorzec": "Kolor: Do potwierdzenia", "wystapienia": 3 },
+      { "wzorzec": "Frez: wg projektu", "wystapienia": 1 }
+    ]
+  },
+  "sprzet_agd": {
+    "rodzaje": { "Piekarnik": 1, "Szuflada grzewcza": 1 },
+    "marki": { "Marka X": 1, "Marka Y": 2 }
+  },
+  "slowniki": {
+    "klauzula": ["Klauzula testowa do sprawdzenia importu."],
+    "nieznany_slownik": ["x"]
+  }
+}
