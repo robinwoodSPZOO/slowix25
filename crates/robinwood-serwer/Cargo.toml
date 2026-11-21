@@ -34,10 +34,11 @@ genpdf = { version = "0.2", features = ["images"] }
 sha2 = "0.10"
 # Ta sama wersja crate'a image co w genpdf (obrazy do PDF i DOCX)
 image023 = { package = "image", version = "0.23", default-features = false, features = ["jpeg", "png"] }
+# Generator Umów (Faza 3): szablony DOCX użytkownika
+zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
-zip = { version = "8", default-features = false, features = ["deflate"] }
 # Odczyt tekstu z PDF w testach eksportu (ta sama wersja co w printpdf)
 lopdf = "0.26"
