@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatujDate, formatujKwote, parsujKwote } from "./formaty";
+import { bladKwoty, formatujDate, formatujKwote, MAKS_KWOTA_GR, parsujKwote } from "./formaty";
 
 describe("formatujKwote", () => {
   it("formatuje grosze po polsku", () => {
@@ -22,6 +22,18 @@ describe("parsujKwote", () => {
   it("zwraca null dla błędnych danych", () => {
     expect(parsujKwote("abc")).toBeNull();
     expect(parsujKwote("1,234")).toBeNull();
+  });
+  it("odrzuca kwoty ponad 1 000 000 000,00 zł (limit serwera)", () => {
+    expect(parsujKwote("1 000 000 000,00")).toBe(MAKS_KWOTA_GR);
+    expect(parsujKwote("1 000 000 000,01")).toBeNull();
+    expect(parsujKwote("46116860184273879,04")).toBeNull();
+    expect(bladKwoty("1 000 000 000,01")).toContain("1 000 000 000,00");
+  });
+  it("podaje czytelny powód błędu", () => {
+    expect(bladKwoty("12,345")).toContain("2 miejsca");
+    expect(bladKwoty("abc")).toContain("Wpisz kwotę");
+    expect(bladKwoty("12,34")).toBeNull();
+    expect(bladKwoty("")).toBeNull();
   });
 });
 

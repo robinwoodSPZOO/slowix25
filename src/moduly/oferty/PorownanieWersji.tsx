@@ -1,7 +1,7 @@
 // Porównanie dwóch wersji oferty: lista zmian (nagłówek, wycena, sekcje, części, wiersze).
 
 import { useEffect, useState } from "react";
-import { CircleMinus, CirclePlus, PencilLine } from "lucide-react";
+import { ArrowRightLeft, CircleMinus, CirclePlus, PencilLine } from "lucide-react";
 import type { Porownanie, WersjaKrotko } from "../../api/typy";
 import { usePolaczenie } from "../../kontekst/Polaczenie";
 import { EtykietaStatusu, Okno, Przycisk } from "../../ui";
@@ -10,9 +10,10 @@ const RODZAJ = {
   dodano: { ikona: CirclePlus, tekst: "Dodano", stan: "spokojnie" as const },
   usunieto: { ikona: CircleMinus, tekst: "Usunięto", stan: "czerwony" as const },
   zmieniono: { ikona: PencilLine, tekst: "Zmieniono", stan: "zolty" as const },
+  przeniesiono: { ikona: ArrowRightLeft, tekst: "Przeniesiono", stan: "neutralny" as const },
 };
 
-const POZIOM = { naglowek: "Nagłówek", wycena: "Wycena", sekcja: "Sekcja", czesc: "Część", wiersz: "Wiersz" };
+const POZIOM = { naglowek: "Nagłówek", wycena: "Wycena", sekcja: "Sekcja", czesc: "Część", wiersz: "Wiersz", zdjecie: "Zdjęcie" };
 
 export function PorownanieWersji({ ofertaId, wersje, biezaca, onZamknij }: { ofertaId: number; wersje: WersjaKrotko[]; biezaca: number; onZamknij: () => void }) {
   const { api } = usePolaczenie();

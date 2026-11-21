@@ -9,6 +9,8 @@ import {
   podpowiedziDla,
   poprawWybor,
   przesun,
+  przesunWiersz,
+  wstawPrzed,
   wierszePogrupowane,
 } from "./logika";
 
@@ -28,7 +30,7 @@ const wiersz = (id: number, podgrupa: Wiersz["podgrupa"], rodzaj: string): Wiers
   pozycja_slownika_id: null,
   cena_gr: null,
   material_z_korpusu: false,
-  kolejnosc: id,
+  kolejnosc: id, wersja: 1, zmieniono: null,
 });
 
 const poz = (slownik_kod: string, wartosc: string, podgrupa: "glowna" | "wyposazenie" | null = null) => ({
@@ -38,7 +40,7 @@ const poz = (slownik_kod: string, wartosc: string, podgrupa: "glowna" | "wyposaz
   producent: null,
   dekor: null,
   kategoria_materialu_id: null,
-  kolejnosc: 0,
+  kolejnosc: 0, wersja: 1, zmieniono: null,
   podgrupa,
 });
 
@@ -76,7 +78,7 @@ describe("edytor specyfikacji – logika", () => {
       ident: null,
       nazwa: "Słupki",
       cena_gr: null,
-      kolejnosc: 0,
+      kolejnosc: 0, wersja: 1, zmieniono: null,
       wiersze: [wiersz(1, "wyposazenie", "Uchwyty"), wiersz(2, "glowna", "Korpus")],
     };
     const g = wierszePogrupowane(c);
@@ -105,7 +107,7 @@ describe("edytor specyfikacji – logika", () => {
       wlasciciel: null,
       tylko_do_odczytu: false,
       sekcje: [
-        { id: 5, specyfikacja_id: 1, ident: null, numer: "01", nazwa: "A", typ: "meble", wariant: null, cena_gr: null, stawka_vat: null, kolejnosc: 0, czesci: [] },
+        { id: 5, specyfikacja_id: 1, ident: null, numer: "01", nazwa: "A", typ: "meble", wariant: null, cena_gr: null, stawka_vat: null, kolejnosc: 0, wersja: 1, zmieniono: null, czesci: [] },
         {
           id: 6,
           specyfikacja_id: 1,
@@ -116,13 +118,33 @@ describe("edytor specyfikacji – logika", () => {
           wariant: null,
           cena_gr: null,
           stawka_vat: null,
-          kolejnosc: 1,
-          czesci: [{ id: 9, sekcja_id: 6, ident: null, nazwa: "c", cena_gr: null, kolejnosc: 0, wiersze: [] }],
+          kolejnosc: 1, wersja: 1, zmieniono: null,
+          czesci: [{ id: 9, sekcja_id: 6, ident: null, nazwa: "c", cena_gr: null, kolejnosc: 0, wersja: 1, zmieniono: null, wiersze: [] }],
         },
       ],
     };
     expect(poprawWybor(spec, null)).toEqual({ typ: "czesc", id: 9 });
     expect(poprawWybor(spec, { typ: "czesc", id: 123 })).toEqual({ typ: "czesc", id: 9 });
     expect(poprawWybor(spec, { typ: "sekcja", id: 5 })).toEqual({ typ: "sekcja", id: 5 });
+  });
+});
+
+describe("przesuwanie wierszy", () => {
+  const c = {
+    id: 1, sekcja_id: 1, ident: null, nazwa: "c", cena_gr: null, kolejnosc: 0, wersja: 1, zmieniono: null,
+    wiersze: [
+      { id: 1, podgrupa: "glowna" },
+      { id: 2, podgrupa: "wyposazenie" },
+      { id: 3, podgrupa: "glowna" },
+    ] as Wiersz[],
+  } as Czesc;
+  it("Alt+↓ zamienia z następnym wierszem tej samej podgrupy", () => {
+    expect(przesunWiersz(c, 1, 1)).toEqual([3, 2, 1]);
+    expect(przesunWiersz(c, 3, 1)).toBeNull();
+    expect(przesunWiersz(c, 2, -1)).toBeNull();
+  });
+  it("przeciągnięcie wstawia przed wskazany wiersz", () => {
+    expect(wstawPrzed(c, 3, 1)).toEqual([3, 1, 2]);
+    expect(wstawPrzed(c, 1, 1)).toBeNull();
   });
 });

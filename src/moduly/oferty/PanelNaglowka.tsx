@@ -5,12 +5,23 @@ import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
 import type { DaneWersji, PelnaWersja } from "../../api/typy";
 import { usePolaczenie } from "../../kontekst/Polaczenie";
 import { Pole, Przycisk } from "../../ui";
-import { daneWersji } from "./wspolne";
+import { BladApi } from "../../api/klient";
+import { daneWersji, zmianaWersji, type ObslugaKonfliktu } from "./wspolne";
 
-export function PanelNaglowka({ dane, onDane, onBlad }: { dane: PelnaWersja; onDane: (d: PelnaWersja) => void; onBlad: (b: string | null) => void }) {
+export function PanelNaglowka({
+  dane,
+  onDane,
+  onBlad,
+  onKonflikt,
+}: {
+  dane: PelnaWersja;
+  onDane: (d: PelnaWersja) => void;
+  onBlad: (b: string | null) => void;
+  onKonflikt?: ObslugaKonfliktu;
+}) {
   const { api } = usePolaczenie();
   const w = dane.wersja;
-  const ro = !w.najnowsza;
+  const ro = w.tylko_do_odczytu;
   const [stan, ustawStan] = useState<{ baza: typeof w; szkic: DaneWersji }>(() => ({ baza: w, szkic: daneWersji(w) }));
   const [klauzuleSlownik, ustawKlauzuleSlownik] = useState<string[]>([]);
   // Nowe dane z serwera (zapis, inne stanowisko) zastępują szkic.
@@ -26,12 +37,20 @@ export function PanelNaglowka({ dane, onDane, onBlad }: { dane: PelnaWersja; onD
   const zapisz = async (zmiana: Partial<DaneWersji> = {}) => {
     const nowe = { ...szkic, ...zmiana };
     ustawSzkic(() => nowe);
-    if (JSON.stringify(nowe) === JSON.stringify(daneWersji(w))) return;
+    // Wysyłamy tylko zmienione pola (cudze zmiany innych pól nie zostaną nadpisane).
+    const baza = daneWersji(w) as unknown as Record<string, unknown>;
+    const zmienione = Object.fromEntries(
+      Object.entries(nowe).filter(([k, v]) => JSON.stringify(v ?? null) !== JSON.stringify(baza[k] ?? null)),
+    ) as Partial<DaneWersji>;
+    if (Object.keys(zmienione).length === 0) return;
+    const z = zmianaWersji(w, zmienione);
     try {
-      onDane(await api.oferty.zmienWersje(w.id, nowe));
+      onDane(await api.oferty.zmienWersje(w.id, z));
       onBlad(null);
     } catch (e) {
-      onBlad((e as Error).message);
+      if (e instanceof BladApi && e.kod === 409 && onKonflikt) {
+        onKonflikt(e, async (akt) => onDane(await api.oferty.zmienWersje(w.id, { ...z, poprzednie: akt as Partial<DaneWersji> })));
+      } else onBlad((e as Error).message);
     }
   };
 

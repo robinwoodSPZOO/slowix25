@@ -1,12 +1,7 @@
 /* Moduł Oferty */
-.karta { background: var(--tlo-powierzchni); border: 1px solid var(--linia); border-radius: var(--r-8); box-shadow: var(--cien-1); overflow: hidden; }
-.wejscie--maly { height: 26px; font-size: var(--rozmiar-etykieta); padding: 0 var(--o-6); }
 
 /* Lista */
 .lista-ofert { display: flex; flex-direction: column; gap: var(--o-16); }
-.lista-ofert__naglowek { display: flex; align-items: center; justify-content: space-between; }
-.lista-ofert__naglowek h1 { margin: 0; }
-.lista-ofert__akcje { display: flex; gap: var(--o-8); }
 .lista-ofert__filtry { display: flex; flex-wrap: wrap; gap: var(--o-12); align-items: center; }
 .lista-ofert__szukaj { position: relative; display: flex; align-items: center; flex: 1; min-width: 220px; max-width: 360px; }
 .lista-ofert__szukaj svg { position: absolute; left: 10px; color: var(--tekst-wyciszony); }

@@ -157,3 +157,61 @@ export function etykietaSekcji(s: Sekcja): string {
 export function liczbaDoPotwierdzenia(wiersze: Wiersz[]): number {
   return wiersze.filter((w) => w.status === "do_potwierdzenia").length;
 }
+
+/** Nazwa pola wiersza do komunikatów (konflikty, błędy). */
+export function nazwaPolaWiersza(p: string): string {
+  const n: Record<string, string> = {
+    rodzaj: "Rodzaj",
+    material: "Materiał",
+    opis: "Opis",
+    ilosc: "Ilość",
+    jednostka: "j.m.",
+    status: "Status",
+    cena_gr: "Cena jedn.",
+    podgrupa: "Podgrupa",
+    termin_potwierdzenia: "Termin potwierdzenia",
+    nazwa: "Nazwa",
+    typ: "Typ",
+    stawka_vat: "Stawka VAT",
+    wariant: "Wariant",
+  };
+  return n[p] ?? p;
+}
+
+/**
+ * Nowa kolejność wszystkich wierszy części po przesunięciu wiersza o krok w obrębie jego
+ * podgrupy (Alt+↑/↓). `null`, gdy nie ma dokąd przesunąć.
+ */
+export function przesunWiersz(c: Czesc, id: number, krok: -1 | 1): number[] | null {
+  const w = c.wiersze.find((x) => x.id === id);
+  if (!w) return null;
+  const wGrupie = c.wiersze.filter((x) => x.podgrupa === w.podgrupa).map((x) => x.id);
+  const i = wGrupie.indexOf(id);
+  const sasiad = wGrupie[i + krok];
+  if (sasiad === undefined) return null;
+  const ids = c.wiersze.map((x) => x.id);
+  const a = ids.indexOf(id);
+  const b = ids.indexOf(sasiad);
+  [ids[a], ids[b]] = [ids[b]!, ids[a]!];
+  return ids;
+}
+
+/** Kolejność po przeciągnięciu wiersza `id` przed wiersz `przed` (ta sama część). */
+export function wstawPrzed(c: Czesc, id: number, przed: number): number[] | null {
+  if (id === przed) return null;
+  const ids = c.wiersze.map((x) => x.id).filter((x) => x !== id);
+  const j = ids.indexOf(przed);
+  if (j < 0) return null;
+  ids.splice(j, 0, id);
+  return ids;
+}
+
+/** Zmienione pola szkicu względem wartości z serwera (pomija pola równe bazie). */
+export function zmienionePola(w: Wiersz, pola: DaneWiersza): DaneWiersza {
+  const baza = daneZWiersza(w);
+  const wynik: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(pola)) {
+    if (norm(v) !== norm((baza as Record<string, unknown>)[k])) wynik[k] = v;
+  }
+  return wynik as DaneWiersza;
+}

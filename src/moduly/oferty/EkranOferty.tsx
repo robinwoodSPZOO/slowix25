@@ -4,14 +4,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ArrowLeft, FileDown, FileSignature, FileText, GitCompareArrows, Mail, CopyPlus, CircleAlert } from "lucide-react";
-import type { Klient, PelnaWersja, Specyfikacja, StatusOferty } from "../../api/typy";
+import type { BladApi } from "../../api/klient";
+import type { KonfliktPola, Klient, PelnaWersja, Specyfikacja, StatusOferty } from "../../api/typy";
 import { usePolaczenie } from "../../kontekst/Polaczenie";
 import { formatujDate } from "../../lib/formaty";
 import { EtykietaStatusu, Przycisk, Segment } from "../../ui";
-import { EdytorSpecyfikacji } from "../specyfikacja";
+import { EdytorSpecyfikacji, OknoKonfliktu, PanelZdjec, nazwaPolaWiersza } from "../specyfikacja";
 import { PanelNaglowka } from "./PanelNaglowka";
 import { PanelWyceny } from "./PanelWyceny";
-import { PanelZdjec } from "./PanelZdjec";
 import { PorownanieWersji } from "./PorownanieWersji";
 import { zapiszPlik } from "./pobieranie";
 import { KOLEJNOSC_STATUSOW, STATUSY_OFERTY } from "./statusy";
@@ -31,6 +31,10 @@ export function EkranOferty() {
   const [zakladka, ustawZakladke] = useState<Zakladka>("wycena");
   const [porownanie, ustawPorownanie] = useState(false);
   const [eksport, ustawEksport] = useState<"pdf" | "docx" | null>(null);
+  const [konflikt, ustawKonflikt] = useState<{ konflikty: KonfliktPola[]; ponow: (a: Record<string, unknown>) => Promise<void> } | null>(null);
+  const obsluzKonflikt = useCallback((e: BladApi, ponow: (a: Record<string, unknown>) => Promise<void>) => {
+    ustawKonflikt({ konflikty: e.konflikty, ponow });
+  }, []);
 
   /** Pobiera wskazaną (albo najnowszą) wersję oferty. */
   const pobierzDane = useCallback(async (): Promise<PelnaWersja> => {
@@ -91,13 +95,15 @@ export function EkranOferty() {
   };
 
   const zmienStatus = async (s: StatusOferty) => {
+    if (oferta.status === "szkic" && s !== "szkic" && !confirm("Po zmianie statusu ta wersja zostanie zamrożona (także dane inwestora i firmy w dokumencie). Dalsze zmiany – przez nową wersję. Kontynuować?")) return;
     try {
-      const r = await api.oferty.zmienStatus(oferta.id, s);
-      ustawDane((d) => (d ? { ...d, oferta: r.oferta } : d));
+      await api.oferty.zmienStatus(oferta.id, s);
+      ustawDane(await pobierzDane());
     } catch (e) {
       ustawBlad((e as Error).message);
     }
   };
+
 
   const zmienKlienta = async (k: number) => {
     try {
@@ -109,6 +115,10 @@ export function EkranOferty() {
   };
 
   const pobierz = async (format: "pdf" | "docx") => {
+    if (dane.wycena.bledy.length > 0) {
+      ustawBlad(`Nie można utworzyć dokumentu: ${dane.wycena.bledy.join("; ")}`);
+      return;
+    }
     ustawEksport(format);
     try {
       const { nazwa, plik } = await api.oferty.eksport(wersja.id, format);
@@ -133,7 +143,7 @@ export function EkranOferty() {
             <div className="ekran-oferty__meta">
               <label>
                 <span className="sr-only">Inwestor</span>
-                <select className="wejscie wejscie--maly" value={oferta.klient_id} aria-label="Inwestor" onChange={(e) => void zmienKlienta(Number(e.target.value))}>
+                <select className="wejscie wejscie--maly" value={oferta.klient_id} aria-label="Inwestor" disabled={wersja.tylko_do_odczytu} onChange={(e) => void zmienKlienta(Number(e.target.value))}>
                   {klienci.length === 0 && <option value={oferta.klient_id}>{oferta.klient_nazwa}</option>}
                   {klienci.map((k) => (
                     <option key={k.id} value={k.id}>
@@ -152,7 +162,7 @@ export function EkranOferty() {
             <span>Status</span>
             <select className="wejscie wejscie--maly" value={oferta.status} onChange={(e) => void zmienStatus(e.target.value as StatusOferty)}>
               {KOLEJNOSC_STATUSOW.map((s) => (
-                <option key={s} value={s}>
+                <option key={s} value={s} disabled={s === "szkic" && oferta.status !== "szkic"}>
                   {STATUSY_OFERTY[s].etykieta}
                 </option>
               ))}
@@ -169,7 +179,7 @@ export function EkranOferty() {
               ))}
             </select>
           </label>
-          <Przycisk ikona={CopyPlus} onClick={() => void nowaWersja()} title={`Nowa wersja jako kopia v${wersja.nr_wersji}`}>
+          <Przycisk ikona={CopyPlus} disabled={oferta.klient_usuniety} onClick={() => void nowaWersja()} title={`Nowa wersja jako kopia v${wersja.nr_wersji}`}>
             Nowa wersja
           </Przycisk>
           <Przycisk ikona={GitCompareArrows} disabled={wersje.length < 2} onClick={() => ustawPorownanie(true)}>
@@ -190,6 +200,24 @@ export function EkranOferty() {
           </Przycisk>
         </div>
       </header>
+      {oferta.klient_usuniety && (
+        <div className="komunikat-stanu status--pomaranczowy ekran-oferty__blad">
+          <CircleAlert size={14} aria-hidden /> Klient „{oferta.klient_nazwa}” jest usunięty – ofertę można tylko przeglądać.
+          <Przycisk
+            maly
+            onClick={async () => {
+              try {
+                await api.klienci.przywroc(oferta.klient_id);
+                setTimeout(() => void pobierzDane().then(ustawDane), 0);
+              } catch (e) {
+                ustawBlad((e as Error).message);
+              }
+            }}
+          >
+            Przywróć klienta
+          </Przycisk>
+        </div>
+      )}
       {blad && (
         <div className="komunikat-stanu status--czerwony ekran-oferty__blad" role="alert">
           <CircleAlert size={14} aria-hidden /> {blad}
@@ -199,6 +227,13 @@ export function EkranOferty() {
         <EdytorSpecyfikacji
           specyfikacja={dane.specyfikacja}
           onZmiana={poZmianieSpecyfikacji}
+          akcjaBlokady={
+            wersja.tylko_do_odczytu && !oferta.klient_usuniety ? (
+              <Przycisk maly wariant="glowny" ikona={CopyPlus} onClick={() => void nowaWersja()}>
+                Nowa wersja
+              </Przycisk>
+            ) : undefined
+          }
           panel={(k) => (
             <div className="panel-oferty">
               <div className="panel-oferty__zakladki">
@@ -213,13 +248,30 @@ export function EkranOferty() {
                   ]}
                 />
               </div>
-              {zakladka === "wycena" && <PanelWyceny dane={dane} onDane={ustawDane} onBlad={ustawBlad} onSpecyfikacja={poZmianieSpecyfikacji} />}
-              {zakladka === "naglowek" && <PanelNaglowka dane={dane} onDane={ustawDane} onBlad={ustawBlad} />}
+              {zakladka === "wycena" && <PanelWyceny dane={dane} onDane={ustawDane} onBlad={ustawBlad} onSpecyfikacja={poZmianieSpecyfikacji} onKonflikt={obsluzKonflikt} />}
+              {zakladka === "naglowek" && <PanelNaglowka dane={dane} onDane={ustawDane} onBlad={ustawBlad} onKonflikt={obsluzKonflikt} />}
               {zakladka === "zdjecia" && <PanelZdjec specyfikacja={dane.specyfikacja} kontekst={k} onSpecyfikacja={poZmianieSpecyfikacji} onBlad={ustawBlad} />}
             </div>
           )}
         />
       </div>
+      {konflikt && (
+        <OknoKonfliktu
+          tytul="Konflikt zmian oferty"
+          konflikty={konflikt.konflikty}
+          nazwaPola={nazwaPolaWiersza}
+          onMoja={() => {
+            const k = konflikt;
+            ustawKonflikt(null);
+            const akt = Object.fromEntries(k.konflikty.map((x) => [x.pole, x.aktualna]));
+            k.ponow(akt).catch((e: Error) => ustawBlad(e.message));
+          }}
+          onCudza={() => {
+            ustawKonflikt(null);
+            void pobierzDane().then(ustawDane, (e: Error) => ustawBlad(e.message));
+          }}
+        />
+      )}
       {porownanie && <PorownanieWersji ofertaId={oferta.id} wersje={wersje} biezaca={wersja.id} onZamknij={() => ustawPorownanie(false)} />}
     </div>
   );

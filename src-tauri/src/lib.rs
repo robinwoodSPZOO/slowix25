@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager, State, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 
 use konfiguracja::{Konfiguracja, Tryb};
@@ -106,6 +106,36 @@ fn przelacz_widzet(app: AppHandle) {
     zasobnik::przelacz_okno(&app, zasobnik::OKNO_WIDZET);
 }
 
+/// Interfejs zapisał szkice po zdarzeniu `robinwood://przed-zamknieciem` – chowamy okno.
+#[tauri::command]
+fn ukryj_glowne_okno(app: AppHandle) {
+    if let Some(o) = app.get_webview_window(zasobnik::OKNO_GLOWNE) {
+        let _ = o.hide();
+    }
+}
+
+/// Interfejs zapisał szkice po zdarzeniu `robinwood://przed-zakonczeniem` – koniec programu.
+#[tauri::command]
+fn zakoncz_aplikacje(app: AppHandle) {
+    app.exit(0);
+}
+
+/// Zamknięcie okna / „Zakończ”: najpierw interfejs zapisuje niezapisane wiersze (zdarzenie),
+/// potem sam wywołuje `ukryj_glowne_okno` / `zakoncz_aplikacje`. Gdyby interfejs nie
+/// odpowiedział (np. jeszcze się ładuje), po `zapas` wykonujemy akcję mimo to.
+pub(crate) fn po_zapisie_szkicow(app: &AppHandle, zdarzenie: &str, zapas: Duration, akcja: fn(&AppHandle)) {
+    let wyslano = app.emit_to(zasobnik::OKNO_GLOWNE, zdarzenie, ()).is_ok();
+    if !wyslano {
+        akcja(app);
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(zapas);
+        akcja(&app);
+    });
+}
+
 #[tauri::command]
 fn otworz_glowne_okno(app: AppHandle) {
     zasobnik::pokaz_okno(&app, zasobnik::OKNO_GLOWNE);
@@ -168,6 +198,8 @@ pub fn run() {
             powiadomienie_testowe,
             przelacz_widzet,
             otworz_glowne_okno,
+            ukryj_glowne_okno,
+            zakoncz_aplikacje,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -190,8 +222,21 @@ pub fn run() {
         .on_window_event(|okno, zdarzenie| {
             // Zamknięcie okna chowa je do zasobnika; program kończy „Zakończ” w menu zasobnika.
             if let WindowEvent::CloseRequested { api, .. } = zdarzenie {
-                let _ = okno.hide();
                 api.prevent_close();
+                if okno.label() == zasobnik::OKNO_GLOWNE {
+                    po_zapisie_szkicow(
+                        okno.app_handle(),
+                        "robinwood://przed-zamknieciem",
+                        Duration::from_secs(4),
+                        |a| {
+                            if let Some(o) = a.get_webview_window(zasobnik::OKNO_GLOWNE) {
+                                let _ = o.hide();
+                            }
+                        },
+                    );
+                } else {
+                    let _ = okno.hide();
+                }
             }
         })
         .run(tauri::generate_context!())

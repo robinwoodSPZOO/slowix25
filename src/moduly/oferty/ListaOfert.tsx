@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Building2, FilePlus2, Search, TriangleAlert } from "lucide-react";
+import { Building2, FilePlus2, Search, TriangleAlert, UserX } from "lucide-react";
 import type { Klient, OfertaNaLiscie, StatusOferty } from "../../api/typy";
 import { usePolaczenie } from "../../kontekst/Polaczenie";
 import { formatujDate, formatujKwote } from "../../lib/formaty";
@@ -39,9 +39,9 @@ export function ListaOfert() {
 
   return (
     <div className="lista-ofert">
-      <div className="lista-ofert__naglowek">
+      <div className="naglowek-modulu">
         <h1>Oferty</h1>
-        <div className="lista-ofert__akcje">
+        <div className="naglowek-modulu__akcje">
           <Przycisk wariant="tekstowy" ikona={Building2} onClick={() => nawiguj("/oferty/ustawienia")}>
             Dane firmy w ofertach
           </Przycisk>
@@ -93,7 +93,15 @@ export function ListaOfert() {
                   <td>
                     <strong>{o.numer}</strong>
                   </td>
-                  <td>{o.klient_nazwa}</td>
+                  <td>
+                    {o.klient_nazwa}
+                    {o.klient_usuniety && (
+                      <>
+                        {" "}
+                        <EtykietaStatusu stan="neutralny" ikona={UserX} tekst="klient usunięty" />
+                      </>
+                    )}
+                  </td>
                   <td>{o.adres_inwestycji ?? "—"}</td>
                   <td>v{o.nr_wersji}</td>
                   <td>{formatujDate(o.data_oferty)}</td>
@@ -109,7 +117,9 @@ export function ListaOfert() {
                   <td>
                     <EtykietaStatusu stan={st.stan} ikona={st.ikona} tekst={st.etykieta} />
                   </td>
-                  <td className="kolumna-kwoty">{formatujKwote(o.suma_brutto_gr)}</td>
+                  <td className="kolumna-kwoty" title={o.blad_wyceny ?? undefined}>
+                    {o.suma_brutto_gr === null ? <EtykietaStatusu stan="czerwony" ikona={TriangleAlert} tekst="błąd wyceny" /> : formatujKwote(o.suma_brutto_gr)}
+                  </td>
                 </WierszTabeli>
               );
             })}

@@ -4,65 +4,86 @@
 import { useState } from "react";
 import { CircleAlert, Eye, EyeOff, Lock, Refrigerator } from "lucide-react";
 import type { DaneWersji, PelnaWersja, PoziomWyceny, Specyfikacja, TrybCen } from "../../api/typy";
+import { BladApi } from "../../api/klient";
 import { usePolaczenie } from "../../kontekst/Polaczenie";
 import { formatujKwote } from "../../lib/formaty";
 import { Przycisk, Segment } from "../../ui";
-import { PoleKwoty, daneWersji } from "./wspolne";
+import { PoleKwoty, zmianaWersji, type ObslugaKonfliktu } from "./wspolne";
 
 interface Props {
   dane: PelnaWersja;
   onDane: (d: PelnaWersja) => void;
   onBlad: (b: string | null) => void;
   onSpecyfikacja: (s: Specyfikacja) => void;
+  onKonflikt?: ObslugaKonfliktu;
+}
+
+/** Rabat procentowy: liczba 0–100, najwyżej 2 miejsca po przecinku. */
+export function bladRabatu(t: string): string | null {
+  const s = t.replace(",", ".").replace("%", "").trim();
+  if (!s) return null;
+  if (/^\d+\.\d{3,}$/.test(s)) return "Najwyżej 2 miejsca po przecinku, np. 12,35";
+  if (!/^\d+(\.\d{1,2})?$/.test(s)) return "Wpisz liczbę od 0 do 100";
+  if (Number(s) > 100) return "Rabat może wynosić najwyżej 100%";
+  return null;
 }
 
 const procent = (bp: number) => (bp / 100).toLocaleString("pl-PL", { maximumFractionDigits: 2 });
 
-export function PanelWyceny({ dane, onDane, onBlad, onSpecyfikacja }: Props) {
+export function PanelWyceny({ dane, onDane, onBlad, onSpecyfikacja, onKonflikt }: Props) {
   const { api } = usePolaczenie();
   const [wewnetrzne, ustawWewnetrzne] = useState(false);
   const [rabatTekst, ustawRabatTekst] = useState<string | null>(null);
   const { wersja: w, wycena: wy, specyfikacja: s } = dane;
-  const ro = !w.najnowsza;
+  const ro = w.tylko_do_odczytu;
+  const bladRabatuProc = rabatTekst !== null ? bladRabatu(rabatTekst) : null;
   if (!api) return null;
 
-  const zapisz = async (zmiana: Partial<DaneWersji>) => {
+  /** Zapis z obsługą konfliktu: przy 409 użytkownik wybiera „moja / cudza”. */
+  const wyslij = async <T,>(f: (poprzednie?: Record<string, unknown>) => Promise<T>, po: (r: T) => void) => {
     try {
-      onDane(await api.oferty.zmienWersje(w.id, { ...daneWersji(w), ...zmiana }));
+      po(await f());
       onBlad(null);
     } catch (e) {
-      onBlad((e as Error).message);
+      if (e instanceof BladApi && e.kod === 409 && onKonflikt) {
+        onKonflikt(e, async (akt) => po(await f(akt)));
+      } else onBlad((e as Error).message);
     }
   };
 
-  const cenaSekcji = async (sekcjaId: number, cena: number | null) => {
+  const zapisz = (zmiana: Partial<DaneWersji>) =>
+    wyslij(
+      (akt) => {
+        const z = zmianaWersji(w, zmiana);
+        return api.oferty.zmienWersje(w.id, akt ? { ...z, poprzednie: akt as Partial<DaneWersji> } : z);
+      },
+      onDane,
+    );
+
+  const cenaSekcji = (sekcjaId: number, zmiana: { cena_gr?: number | null; stawka_vat?: 8 | 23 }) => {
     const sek = s.sekcje.find((x) => x.id === sekcjaId);
     if (!sek) return;
-    try {
-      const r = await api.specyfikacje.zmienSekcje(sek.id, { nazwa: sek.nazwa, typ: sek.typ, wariant: sek.wariant, cena_gr: cena, stawka_vat: sek.stawka_vat });
-      onSpecyfikacja(r.specyfikacja);
-    } catch (e) {
-      onBlad((e as Error).message);
-    }
+    const poprzednie = Object.fromEntries(Object.keys(zmiana).map((k) => [k, (sek as unknown as Record<string, unknown>)[k]]));
+    return wyslij(
+      (akt) => api.specyfikacje.zmienSekcje(sek.id, { ...zmiana, poprzednie: (akt ?? poprzednie) as never }),
+      (r) => onSpecyfikacja(r.specyfikacja),
+    );
   };
 
-  const cenaCzesci = async (czescId: number, nazwa: string, cena: number | null) => {
-    try {
-      const r = await api.specyfikacje.zmienCzesc(czescId, { nazwa, cena_gr: cena });
-      onSpecyfikacja(r.specyfikacja);
-    } catch (e) {
-      onBlad((e as Error).message);
-    }
-  };
+  const cenaCzesci = (czescId: number, stara: number | null, cena: number | null) =>
+    wyslij(
+      (akt) => api.specyfikacje.zmienCzesc(czescId, { cena_gr: cena, poprzednie: (akt ?? { cena_gr: stara }) as never }),
+      (r) => onSpecyfikacja(r.specyfikacja),
+    );
 
   const zapiszRabatProcent = () => {
     if (rabatTekst === null) return;
+    // Błędna wartość zostaje w polu z komunikatem – nie jest po cichu zaokrąglana ani porzucana.
+    if (bladRabatuProc) return;
     const v = Number(rabatTekst.replace(",", ".").replace("%", "").trim() || "0");
     ustawRabatTekst(null);
-    if (Number.isFinite(v) && v >= 0 && v <= 100) {
-      const bp = Math.round(v * 100);
-      if (bp !== w.rabat_calosc_bp) void zapisz({ rabat_calosc_bp: bp });
-    } else onBlad("Rabat procentowy: od 0 do 100");
+    const bp = Math.round(v * 100);
+    if (bp !== w.rabat_calosc_bp) void zapisz({ rabat_calosc_bp: bp });
   };
 
   const netto = w.tryb_cen === "netto";
@@ -73,8 +94,17 @@ export function PanelWyceny({ dane, onDane, onBlad, onSpecyfikacja }: Props) {
     <div className="panel-wyceny">
       {ro && (
         <div className="komunikat-stanu status--neutralny">
-          <Lock size={14} aria-hidden /> Wersja archiwalna – wycena tylko do podglądu.
+          <Lock size={14} aria-hidden /> {w.najnowsza ? "Wersja zamrożona (oferta wysłana)" : "Wersja archiwalna"} – wycena tylko do podglądu.
         </div>
+      )}
+      {wy.bledy.length > 0 && (
+        <ul className="panel-wyceny__ostrzezenia" aria-label="Błędy wyceny">
+          {wy.bledy.map((b) => (
+            <li key={b} className="komunikat-stanu status--czerwony" role="alert">
+              <CircleAlert size={14} aria-hidden /> {b}
+            </li>
+          ))}
+        </ul>
       )}
       <div className="panel-wyceny__grupa">
         <span className="pole__etykieta">Cena wpisywana dla</span>
@@ -109,7 +139,7 @@ export function PanelWyceny({ dane, onDane, onBlad, onSpecyfikacja }: Props) {
                 {sek.numer} {sek.nazwa}
               </span>
               {w.poziom_wyceny === "sekcja" ? (
-                <PoleKwoty etykieta={`Cena sekcji ${sek.nazwa}`} wartosc={s.sekcje.find((x) => x.id === sek.sekcja_id)?.cena_gr ?? null} wylaczone={ro} onZapisz={(c) => void cenaSekcji(sek.sekcja_id, c)} />
+                <PoleKwoty etykieta={`Cena sekcji ${sek.nazwa}`} wartosc={s.sekcje.find((x) => x.id === sek.sekcja_id)?.cena_gr ?? null} wylaczone={ro} onZapisz={(c) => void cenaSekcji(sek.sekcja_id, { cena_gr: c })} />
               ) : (
                 <span className="panel-wyceny__kwota">{sek.suma_gr === null ? "w cenie całości" : formatujKwote(sek.suma_gr)}</span>
               )}
@@ -120,7 +150,7 @@ export function PanelWyceny({ dane, onDane, onBlad, onSpecyfikacja }: Props) {
                   <span className="panel-wyceny__nazwa" title={c.nazwa}>
                     {c.nazwa}
                   </span>
-                  <PoleKwoty etykieta={`Cena części ${c.nazwa}`} wartosc={c.cena_gr} wylaczone={ro} onZapisz={(v) => void cenaCzesci(c.id, c.nazwa, v)} />
+                  <PoleKwoty etykieta={`Cena części ${c.nazwa}`} wartosc={c.cena_gr} wylaczone={ro} onZapisz={(v) => void cenaCzesci(c.id, c.cena_gr, v)} />
                 </div>
               ))}
             {sek.suma_gr !== null && (
@@ -153,11 +183,12 @@ export function PanelWyceny({ dane, onDane, onBlad, onSpecyfikacja }: Props) {
           <label htmlFor="rabat-calosc" className="panel-wyceny__nazwa">
             Rabat za całość
           </label>
-          <span className="pole-kwoty">
+          <span className="pole-kwoty" title={bladRabatuProc ?? undefined}>
             <input
               id="rabat-calosc"
               className="wejscie wejscie--kwota"
               inputMode="decimal"
+              aria-invalid={bladRabatuProc ? true : undefined}
               disabled={ro}
               value={rabatTekst ?? procent(w.rabat_calosc_bp)}
               onChange={(e) => ustawRabatTekst(e.target.value)}
@@ -165,6 +196,11 @@ export function PanelWyceny({ dane, onDane, onBlad, onSpecyfikacja }: Props) {
               onKeyDown={(e) => e.key === "Enter" && zapiszRabatProcent()}
             />
             <span className="pole-kwoty__waluta">%</span>
+            {bladRabatuProc && (
+              <span className="pole-kwoty__blad" role="alert">
+                {bladRabatuProc}
+              </span>
+            )}
           </span>
         </div>
       </section>
@@ -172,11 +208,26 @@ export function PanelWyceny({ dane, onDane, onBlad, onSpecyfikacja }: Props) {
       {agd.length > 0 && (
         <section className="panel-wyceny__grupa" aria-label="Sprzęt AGD">
           {agd.map((a) => (
-            <div key={a.sekcja_id} className="panel-wyceny__wiersz">
-              <span className="panel-wyceny__nazwa">
-                <Refrigerator size={13} aria-hidden /> {a.nazwa} (VAT {a.stawka_vat}%)
-              </span>
-              <span className="panel-wyceny__kwota">{formatujKwote(a.suma_gr)}</span>
+            <div key={a.sekcja_id} className="panel-wyceny__agd">
+              <div className="panel-wyceny__wiersz">
+                <span className="panel-wyceny__nazwa">
+                  <Refrigerator size={13} aria-hidden /> {a.nazwa}
+                </span>
+                <span className="panel-wyceny__kwota">{formatujKwote(a.suma_gr)}</span>
+              </div>
+              <div className="panel-wyceny__wiersz panel-wyceny__wiersz--czesc">
+                <span className="panel-wyceny__nazwa">VAT sprzętu</span>
+                <Segment<8 | 23>
+                  etykieta={`Stawka VAT – ${a.nazwa}`}
+                  wartosc={a.stawka_vat === 8 ? 8 : 23}
+                  wylaczony={ro}
+                  onZmiana={(v) => void cenaSekcji(a.sekcja_id, { stawka_vat: v })}
+                  opcje={[
+                    { wartosc: 8, etykieta: "8%" },
+                    { wartosc: 23, etykieta: "23%" },
+                  ]}
+                />
+              </div>
             </div>
           ))}
           <p className="pole__pomoc">AGD liczone osobno: cena × ilość z wierszy sekcji, bez rabatów.</p>

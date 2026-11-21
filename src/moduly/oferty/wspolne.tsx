@@ -1,6 +1,20 @@
 import { useState } from "react";
-import type { DaneWersji, WersjaOferty } from "../../api/typy";
-import { formatujKwote, parsujKwote } from "../../lib/formaty";
+import type { BladApi } from "../../api/klient";
+import type { DaneWersji, WersjaOferty, ZmianaCzesciowa } from "../../api/typy";
+import { bladKwoty, formatujKwote, parsujKwote } from "../../lib/formaty";
+
+/**
+ * Obsługa konfliktu 409 w panelach: `ponow(aktualne)` zapisuje „moją” wartość ponownie,
+ * przyjmując wartości z serwera jako poprzednie.
+ */
+export type ObslugaKonfliktu = (e: BladApi, ponow: (aktualne: Record<string, unknown>) => Promise<void>) => void;
+
+/** Zmiana częściowa wersji: tylko podane pola + ich wartości sprzed edycji. */
+export function zmianaWersji(w: WersjaOferty, zmiana: Partial<DaneWersji>): ZmianaCzesciowa<DaneWersji> {
+  const poprzednie: Record<string, unknown> = {};
+  for (const k of Object.keys(zmiana)) poprzednie[k] = (w as unknown as Record<string, unknown>)[k];
+  return { ...zmiana, poprzednie: poprzednie as Partial<DaneWersji> };
+}
 
 /** Dane do PUT /wersje-oferty/{id} z bieżącej wersji. */
 export function daneWersji(w: WersjaOferty): DaneWersji {
@@ -49,9 +63,10 @@ export function PoleKwoty({
     ustawTekst(null);
     if (gr !== wartosc) onZapisz(gr);
   };
-  const bledna = tekst !== null && tekst.trim() !== "" && parsujKwote(tekst) === null;
+  const blad = tekst !== null ? bladKwoty(tekst) : null;
+  const bledna = blad !== null;
   return (
-    <span className="pole-kwoty">
+    <span className="pole-kwoty" title={blad ?? undefined}>
       <input
         id={id}
         className="wejscie wejscie--kwota"
@@ -69,6 +84,11 @@ export function PoleKwoty({
         }}
       />
       <span className="pole-kwoty__waluta">zł</span>
+      {blad && (
+        <span className="pole-kwoty__blad" role="alert">
+          {blad}
+        </span>
+      )}
     </span>
   );
 }

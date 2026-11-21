@@ -3,10 +3,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { CircleCheck, FileUp, LayoutTemplate, TriangleAlert } from "lucide-react";
-import type { KategoriaMaterialu, PozycjaSlownika, RaportImportu, Slownik, SzablonMebli } from "../../api/typy";
+import { BladApi } from "../../api/klient";
+import type { BladPozycji, KategoriaMaterialu, PozycjaSlownika, RaportImportu, Slownik, SzablonMebli } from "../../api/typy";
 import { usePolaczenie } from "../../kontekst/Polaczenie";
 import { EtykietaStatusu, Przycisk, WierszTabeli } from "../../ui";
-import "../oferty/oferty.css";
 import "./slowniki.css";
 
 type Rodzaj = "slowniki" | "szablony";
@@ -20,6 +20,7 @@ export function Slowniki() {
   const [kategorie, ustawKategorie] = useState<KategoriaMaterialu[]>([]);
   const [raport, ustawRaport] = useState<{ rodzaj: Rodzaj; r: RaportImportu } | null>(null);
   const [blad, ustawBlad] = useState<string | null>(null);
+  const [bledyImportu, ustawBledyImportu] = useState<BladPozycji[]>([]);
   const wejscie = useRef<HTMLInputElement>(null);
   const [rodzajImportu, ustawRodzajImportu] = useState<Rodzaj>("slowniki");
 
@@ -46,8 +47,11 @@ export function Slowniki() {
       const r = rodzajImportu === "slowniki" ? await api.importy.slowniki(json) : await api.importy.szablony(json);
       ustawRaport({ rodzaj: rodzajImportu, r });
       ustawBlad(null);
+      ustawBledyImportu([]);
       ustawSzablony(await api.szablony.lista());
     } catch (e) {
+      ustawBledyImportu(e instanceof BladApi ? e.bledy : []);
+      ustawRaport(null);
       ustawBlad(e instanceof SyntaxError ? `Plik nie jest poprawnym JSON-em: ${e.message}` : (e as Error).message);
     } finally {
       if (wejscie.current) wejscie.current.value = "";
@@ -63,9 +67,9 @@ export function Slowniki() {
 
   return (
     <div className="slowniki">
-      <div className="lista-ofert__naglowek">
+      <div className="naglowek-modulu">
         <h1>Słowniki i szablony</h1>
-        <div className="lista-ofert__akcje">
+        <div className="naglowek-modulu__akcje">
           <Przycisk ikona={FileUp} onClick={() => wybierzPlik("slowniki")}>
             Importuj słowniki (slowniki.json)
           </Przycisk>
@@ -80,7 +84,30 @@ export function Slowniki() {
       </p>
       {blad && (
         <div className="komunikat-stanu status--czerwony" role="alert">
-          <TriangleAlert size={14} aria-hidden /> {blad}
+          <TriangleAlert size={14} aria-hidden />
+          <div>
+            {blad}
+            {bledyImportu.length > 0 && (
+              <table className="tabela tabela-bledow">
+                <thead>
+                  <tr>
+                    <th>Pozycja</th>
+                    <th>Pole</th>
+                    <th>Powód</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bledyImportu.map((b, i) => (
+                    <tr key={i}>
+                      <td>{b.pozycja}</td>
+                      <td>{b.pole || "—"}</td>
+                      <td>{b.powod}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
         </div>
       )}
       {raport && (

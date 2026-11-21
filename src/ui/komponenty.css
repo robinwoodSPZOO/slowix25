@@ -152,3 +152,12 @@
   font-size: var(--rozmiar-etykieta);
 }
 .komunikat-stanu svg { flex: none; margin-top: 1px; }
+
+/* Wspólne elementy modułów (wcześniej w oferty.css) */
+.karta { background: var(--tlo-powierzchni); border: 1px solid var(--linia); border-radius: var(--r-8); box-shadow: var(--cien-1); overflow: hidden; }
+.wejscie--maly { height: 26px; font-size: var(--rozmiar-etykieta); padding: 0 var(--o-6); }
+.naglowek-modulu { display: flex; align-items: center; justify-content: space-between; gap: var(--o-8); flex-wrap: wrap; }
+.naglowek-modulu h1 { margin: 0; }
+.naglowek-modulu__akcje { display: flex; gap: var(--o-8); flex-wrap: wrap; }
+.tabela-bledow { margin-top: var(--o-6); font-size: var(--rozmiar-etykieta); }
+.tabela-bledow td, .tabela-bledow th { padding: var(--o-4) var(--o-6); }

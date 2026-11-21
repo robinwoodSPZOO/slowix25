@@ -1,11 +1,14 @@
-// Zdjęcia przypięte do całej oferty, wybranej sekcji albo części (pliki na serwerze).
+// Zdjęcia przypięte do całej specyfikacji (oferty, umowy, aneksu), wybranej sekcji albo części.
+// Wspólny dla ofert i umów – rozmawia tylko z API specyfikacji.
 
 import { useRef, useState } from "react";
 import { ImagePlus, Trash2 } from "lucide-react";
-import type { Specyfikacja } from "../../api/typy";
+import type { KlientApi } from "../../api/klient";
+import type { Specyfikacja, Zdjecie } from "../../api/typy";
 import { usePolaczenie } from "../../kontekst/Polaczenie";
 import { Przycisk, Segment } from "../../ui";
-import type { KontekstWyboru } from "../specyfikacja";
+import type { KontekstWyboru } from "./EdytorSpecyfikacji";
+import { useObrazek } from "./useObrazek";
 
 type Cel = "oferta" | "sekcja" | "czesc";
 
@@ -91,7 +94,7 @@ export function PanelZdjec({
       <ul className="panel-zdjec__lista">
         {s.zdjecia.map((z) => (
           <li key={z.id} className="panel-zdjec__zdjecie">
-            <img src={api.adresPliku(z.plik_id)} alt={z.podpis ?? z.nazwa} loading="lazy" />
+            <Miniatura api={api} z={z} />
             <div className="panel-zdjec__opis">
               <span className="pole__pomoc">{opis(z.sekcja_id, z.czesc_id)}</span>
               <input
@@ -132,4 +135,9 @@ export function PanelZdjec({
       </ul>
     </div>
   );
+}
+
+function Miniatura({ api, z }: { api: KlientApi; z: Zdjecie }) {
+  const src = useObrazek(api, z.plik_id);
+  return src ? <img src={src} alt={z.podpis ?? z.nazwa} /> : <span className="panel-zdjec__brak" aria-label={z.nazwa} />;
 }

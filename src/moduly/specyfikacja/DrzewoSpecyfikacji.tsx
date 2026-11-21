@@ -2,7 +2,7 @@
 // dwuklik), kopiuj, usuń, przesuń (Alt+↑/↓).
 
 import { useState, type KeyboardEvent } from "react";
-import { ArrowDown, ArrowUp, Box, Copy, LayoutTemplate, Pencil, Plus, Refrigerator, Rows3, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, Box, Copy, FolderInput, LayoutTemplate, Pencil, Plus, Refrigerator, Rows3, Trash2 } from "lucide-react";
 import type { Sekcja, Specyfikacja, SzablonMebli, WynikZmiany } from "../../api/typy";
 import type { KlientApi } from "../../api/klient";
 import { ElementDrzewa, Okno, Pole, Przycisk } from "../../ui";
@@ -24,6 +24,7 @@ export function DrzewoSpecyfikacji({ specyfikacja: s, wybor, onWybor, wykonaj, a
   const [zwiniete, ustawZwiniete] = useState<Set<number>>(new Set());
   const [edycja, ustawEdycje] = useState<Edycja>(null);
   const [dialog, ustawDialog] = useState<DialogSzablonu>(null);
+  const [przenoszona, ustawPrzenoszona] = useState<{ id: number; nazwa: string; sekcjaId: number } | null>(null);
   const ro = s.tylko_do_odczytu;
   const sp = api.specyfikacje;
 
@@ -64,11 +65,10 @@ export function DrzewoSpecyfikacji({ specyfikacja: s, wybor, onWybor, wykonaj, a
     if (!nazwa) return;
     if (edycja.typ === "sekcja") {
       const sek = s.sekcje.find((x) => x.id === edycja.id);
-      if (sek && sek.nazwa !== nazwa)
-        await wykonaj(sp.zmienSekcje(sek.id, { nazwa, typ: sek.typ, wariant: sek.wariant, cena_gr: sek.cena_gr, stawka_vat: sek.stawka_vat }));
+      if (sek && sek.nazwa !== nazwa) await wykonaj(sp.zmienSekcje(sek.id, { nazwa, poprzednie: { nazwa: sek.nazwa } }));
     } else {
       const cz = s.sekcje.flatMap((x) => x.czesci).find((x) => x.id === edycja.id);
-      if (cz && cz.nazwa !== nazwa) await wykonaj(sp.zmienCzesc(cz.id, { nazwa, cena_gr: cz.cena_gr }));
+      if (cz && cz.nazwa !== nazwa) await wykonaj(sp.zmienCzesc(cz.id, { nazwa, poprzednie: { nazwa: cz.nazwa } }));
     }
   };
 
@@ -197,6 +197,9 @@ export function DrzewoSpecyfikacji({ specyfikacja: s, wybor, onWybor, wykonaj, a
                         <>
                           <Przycisk maly wariant="tekstowy" tylkoIkona ikona={Pencil} etykieta="Zmień nazwę (F2)" tabIndex={-1} onClick={() => ustawEdycje({ typ: "czesc", id: c.id, nazwa: c.nazwa })} />
                           <Przycisk maly wariant="tekstowy" tylkoIkona ikona={Copy} etykieta="Kopiuj część" tabIndex={-1} onClick={() => void wykonaj(sp.kopiujCzesc(c.id)).then((w) => wybierzPo(w, "czesc"))} />
+                          {s.sekcje.length > 1 && (
+                            <Przycisk maly wariant="tekstowy" tylkoIkona ikona={FolderInput} etykieta="Przenieś do innej sekcji" tabIndex={-1} onClick={() => ustawPrzenoszona({ id: c.id, nazwa: c.nazwa, sekcjaId: sek.id })} />
+                          )}
                           <Przycisk maly wariant="tekstowy" tylkoIkona ikona={ArrowUp} etykieta="W górę (Alt+↑)" tabIndex={-1} disabled={j === 0} onClick={() => void przesunCzesc(sek, c.id, -1)} />
                           <Przycisk maly wariant="tekstowy" tylkoIkona ikona={ArrowDown} etykieta="W dół (Alt+↓)" tabIndex={-1} disabled={j === sek.czesci.length - 1} onClick={() => void przesunCzesc(sek, c.id, 1)} />
                           <Przycisk maly wariant="tekstowy" tylkoIkona ikona={Trash2} etykieta="Usuń część" tabIndex={-1} onClick={() => void usunCzesc(c.id, c.nazwa)} />
@@ -209,6 +212,32 @@ export function DrzewoSpecyfikacji({ specyfikacja: s, wybor, onWybor, wykonaj, a
           );
         })}
       </div>
+      {przenoszona && (
+        <Okno tytul={`Przenieś część „${przenoszona.nazwa}”`} onZamknij={() => ustawPrzenoszona(null)}>
+          <p className="pole__pomoc">Wybierz sekcję, na której koniec trafi część:</p>
+          <ul className="lista-celow">
+            {s.sekcje
+              .filter((x) => x.id !== przenoszona.sekcjaId)
+              .map((x) => (
+                <li key={x.id}>
+                  <Przycisk
+                    wariant="tekstowy"
+                    ikona={FolderInput}
+                    onClick={async () => {
+                      const w = await wykonaj(sp.kolejnoscCzesci(x.id, [...x.czesci.map((c) => c.id), przenoszona.id]));
+                      if (w) {
+                        ustawPrzenoszona(null);
+                        onWybor({ typ: "czesc", id: przenoszona.id });
+                      }
+                    }}
+                  >
+                    {etykietaSekcji(x)}
+                  </Przycisk>
+                </li>
+              ))}
+          </ul>
+        </Okno>
+      )}
       {dialog && (
         <DialogSzablonu
           tryb={dialog.tryb}

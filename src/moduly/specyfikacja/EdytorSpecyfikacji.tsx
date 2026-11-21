@@ -3,9 +3,11 @@
 // zwraca całe drzewo, które edytor przekazuje rodzicowi przez `onZmiana`.
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Box, CircleAlert, Lock, Plus, X } from "lucide-react";
+import { Box, CircleAlert, Lock, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Plus, X } from "lucide-react";
+import type { BladApi } from "../../api/klient";
 import type { Czesc, Podpowiedzi, Sekcja, Specyfikacja, SzablonMebli, WynikZmiany } from "../../api/typy";
 import { usePolaczenie } from "../../kontekst/Polaczenie";
+import { wczytajKopie, zapiszKopie } from "../../lib/szkice";
 import { formatujKwote } from "../../lib/formaty";
 import { Przycisk } from "../../ui";
 import { DrzewoSpecyfikacji } from "./DrzewoSpecyfikacji";
@@ -27,9 +29,18 @@ export interface EdytorSpecyfikacjiProps {
   panel?: (k: KontekstWyboru) => ReactNode;
   /** Dodatkowy powód blokady edycji (np. umowa podpisana). */
   tylkoDoOdczytu?: boolean;
+  /** Treść paska „tylko do odczytu” (np. przycisk „Nowa wersja”). */
+  akcjaBlokady?: ReactNode;
 }
 
-export function EdytorSpecyfikacji({ specyfikacja, onZmiana, panel, tylkoDoOdczytu }: EdytorSpecyfikacjiProps) {
+export function EdytorSpecyfikacji({ specyfikacja, onZmiana, panel, tylkoDoOdczytu, akcjaBlokady }: EdytorSpecyfikacjiProps) {
+  const [zwiniete, ustawZwiniete] = useState<{ drzewo: boolean; panel: boolean }>(() => wczytajKopie("uklad-edytora") ?? { drzewo: false, panel: false });
+  const przelaczUklad = (k: "drzewo" | "panel") =>
+    ustawZwiniete((z) => {
+      const n = { ...z, [k]: !z[k] };
+      zapiszKopie("uklad-edytora", n);
+      return n;
+    });
   const { api, ostatnieZdarzenie } = usePolaczenie();
   const [wybor, ustawWybor] = useState<Wybor>(() => poprawWybor(specyfikacja, null));
   const [podpowiedzi, ustawPodpowiedzi] = useState<Podpowiedzi>({});
@@ -51,19 +62,27 @@ export function EdytorSpecyfikacji({ specyfikacja, onZmiana, panel, tylkoDoOdczy
   if (JSON.stringify(wybranyPoprawiony) !== JSON.stringify(wybor)) ustawWybor(wybranyPoprawiony);
 
   const wykonaj = useCallback(
-    async (z: Promise<WynikZmiany>) => {
+    async (z: Promise<WynikZmiany>, przechwyc?: (e: BladApi) => boolean) => {
       try {
         const w = await z;
         ustawBlad(null);
         onZmiana(w.specyfikacja);
         return w;
       } catch (e) {
-        ustawBlad((e as Error).message);
+        if (!(przechwyc && przechwyc(e as BladApi))) ustawBlad((e as Error).message);
         return null;
       }
     },
     [onZmiana],
   );
+  const odswiez = useCallback(async () => {
+    if (!api) return;
+    try {
+      onZmiana(await api.specyfikacje.pobierz(specyfikacja.id));
+    } catch (e) {
+      ustawBlad((e as Error).message);
+    }
+  }, [api, onZmiana, specyfikacja.id]);
 
   if (!api) return null;
 
@@ -73,15 +92,45 @@ export function EdytorSpecyfikacji({ specyfikacja, onZmiana, panel, tylkoDoOdczy
   const czesc = znaleziona?.czesc ?? null;
 
   return (
-    <div className={`edytor-specyfikacji${panel ? " edytor-specyfikacji--z-panelem" : ""}`}>
-      <aside className="edytor-specyfikacji__drzewo">
-        <DrzewoSpecyfikacji specyfikacja={spec} wybor={wybor} onWybor={ustawWybor} wykonaj={wykonaj} api={api} szablony={szablony} />
-      </aside>
+    <div
+      className={`edytor-specyfikacji${panel && !zwiniete.panel ? " edytor-specyfikacji--z-panelem" : ""}${zwiniete.drzewo ? " edytor-specyfikacji--bez-drzewa" : ""}`}
+    >
+      {!zwiniete.drzewo && (
+        <aside className="edytor-specyfikacji__drzewo">
+          <DrzewoSpecyfikacji specyfikacja={spec} wybor={wybor} onWybor={ustawWybor} wykonaj={wykonaj} api={api} szablony={szablony} />
+        </aside>
+      )}
       <section className="edytor-specyfikacji__srodek" aria-label="Wiersze specyfikacji">
+        <div className="edytor-specyfikacji__przelaczniki">
+          <Przycisk
+            maly
+            wariant="tekstowy"
+            tylkoIkona
+            ikona={zwiniete.drzewo ? PanelLeftOpen : PanelLeftClose}
+            etykieta={zwiniete.drzewo ? "Pokaż drzewo specyfikacji" : "Zwiń drzewo specyfikacji"}
+            aria-pressed={!zwiniete.drzewo}
+            onClick={() => przelaczUklad("drzewo")}
+          />
+          {panel && (
+            <Przycisk
+              maly
+              wariant="tekstowy"
+              tylkoIkona
+              ikona={zwiniete.panel ? PanelRightOpen : PanelRightClose}
+              etykieta={zwiniete.panel ? "Pokaż panel (wycena, nagłówek, zdjęcia)" : "Zwiń panel boczny"}
+              aria-pressed={!zwiniete.panel}
+              onClick={() => przelaczUklad("panel")}
+            />
+          )}
+        </div>
         {ro && (
           <div className="komunikat-stanu status--neutralny">
             <Lock size={14} aria-hidden />
-            Tylko do odczytu{specyfikacja.tylko_do_odczytu ? " – to starsza wersja; zmiany wprowadzaj w najnowszej wersji." : "."}
+            <span style={{ flex: 1 }}>
+              Tylko do odczytu
+              {specyfikacja.wlasciciel?.powod_blokady ? ` – ${specyfikacja.wlasciciel.powod_blokady}.` : "."}
+            </span>
+            {akcjaBlokady}
           </div>
         )}
         {blad && (
@@ -104,6 +153,12 @@ export function EdytorSpecyfikacji({ specyfikacja, onZmiana, panel, tylkoDoOdczy
               tylkoDoOdczytu={ro}
               podpowiedzi={podpowiedzi}
               wykonaj={wykonaj}
+              odswiez={odswiez}
+              inneCzesci={specyfikacja.sekcje.flatMap((sk) =>
+                sk.czesci
+                  .filter((c) => c.id !== czesc.id && (sk.typ === "agd") === (sekcja.typ === "agd"))
+                  .map((c) => ({ id: c.id, etykieta: `${etykietaSekcji(sk)} › ${c.nazwa}`, wiersze: c.wiersze.map((w) => w.id) })),
+              )}
               api={api.specyfikacje}
             />
           </>
@@ -119,7 +174,7 @@ export function EdytorSpecyfikacji({ specyfikacja, onZmiana, panel, tylkoDoOdczy
           </div>
         )}
       </section>
-      {panel && <aside className="edytor-specyfikacji__panel">{panel({ wybor, sekcja, czesc })}</aside>}
+      {panel && !zwiniete.panel && <aside className="edytor-specyfikacji__panel">{panel({ wybor, sekcja, czesc })}</aside>}
     </div>
   );
 }

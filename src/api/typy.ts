@@ -98,6 +98,9 @@ export interface Wiersz {
   cena_gr: number | null;
   material_z_korpusu: boolean;
   kolejnosc: number;
+  /** Licznik zmian rekordu. */
+  wersja: number;
+  zmieniono: string | null;
 }
 
 export interface Czesc {
@@ -107,6 +110,8 @@ export interface Czesc {
   nazwa: string;
   cena_gr: number | null;
   kolejnosc: number;
+  wersja: number;
+  zmieniono: string | null;
   wiersze: Wiersz[];
 }
 
@@ -121,6 +126,8 @@ export interface Sekcja {
   cena_gr: number | null;
   stawka_vat: 8 | 23 | null;
   kolejnosc: number;
+  wersja: number;
+  zmieniono: string | null;
   czesci: Czesc[];
 }
 
@@ -141,8 +148,39 @@ export interface Specyfikacja {
   zrodlo_id: number | null;
   sekcje: Sekcja[];
   zdjecia: Zdjecie[];
-  wlasciciel: { rodzaj: string; id: number; nadrzedny_id: number; opis: string } | null;
+  wlasciciel: WlascicielSpecyfikacji | null;
+  /** Powód w `wlasciciel.powod_blokady`. */
   tylko_do_odczytu: boolean;
+}
+
+/** Do czego należy specyfikacja (wersja oferty, umowa, aneks). */
+export interface WlascicielSpecyfikacji {
+  rodzaj: "wersja_oferty" | "umowa" | "aneks" | string;
+  id: number;
+  nadrzedny_id: number;
+  opis: string;
+  /** Zasób zdarzenia WebSocket odświeżanego po zmianie (oferty, umowy). */
+  zasob: string;
+  powod_blokady: string | null;
+}
+
+/**
+ * Zmiana częściowa (PUT): tylko zmienione pola + wartości widziane przed edycją. Serwer zwraca
+ * 409 z `konflikty`, jeśli ktoś inny zmienił w międzyczasie to samo pole.
+ */
+export type ZmianaCzesciowa<T> = Partial<T> & { poprzednie?: Partial<T> };
+
+export interface KonfliktPola {
+  pole: string;
+  poprzednia: unknown;
+  twoja: unknown;
+  aktualna: unknown;
+}
+
+export interface BladPozycji {
+  pozycja: string;
+  pole: string;
+  powod: string;
 }
 
 export interface WynikZmiany {
@@ -217,6 +255,8 @@ export interface Wycena {
   suma_brutto_gr: number;
   wewnetrzne: { koszt_wlasny_gr: number | null; marza_gr: number | null; marza_bp: number | null };
   ostrzezenia: string[];
+  /** Błędy blokujące dokument dla klienta (np. rabaty większe niż suma, kwoty poza zakresem). */
+  bledy: string[];
 }
 
 export interface Oferta {
@@ -229,6 +269,7 @@ export interface Oferta {
   data_akceptacji: string | null;
   utworzono: string;
   zmieniono: string;
+  klient_usuniety: boolean;
 }
 
 export interface OfertaNaLiscie {
@@ -243,8 +284,17 @@ export interface OfertaNaLiscie {
   data_oferty: string | null;
   data_waznosci_cen: string | null;
   adres_inwestycji: string | null;
-  suma_brutto_gr: number;
+  klient_usuniety: boolean;
+  specyfikacja_id: number;
+  /** null, gdy wyceny nie da się policzyć – powód w `blad_wyceny`. */
+  suma_brutto_gr: number | null;
+  blad_wyceny: string | null;
   po_terminie_waznosci: boolean;
+}
+
+export interface MigawkaStron {
+  inwestor: { nazwa: string; adres_ulica: string | null; adres_kod: string | null; adres_miasto: string | null; nip: string | null; email: string | null; telefon: string | null };
+  wykonawca: { nazwa: string; adres: string; nip: string; telefon: string; email: string };
 }
 
 export interface WersjaOferty {
@@ -268,15 +318,37 @@ export interface WersjaOferty {
   utworzono: string;
   zmieniono: string | null;
   najnowsza: boolean;
+  wersja: number;
+  wyslano: string | null;
+  migawka: MigawkaStron | null;
+  /** Starsza wersja albo oferta poza szkicem – zmiany tylko przez nową wersję. */
+  tylko_do_odczytu: boolean;
+  powod_blokady: string | null;
 }
 
-export type DaneWersji = Omit<WersjaOferty, "id" | "oferta_id" | "nr_wersji" | "specyfikacja_id" | "utworzono" | "zmieniono" | "najnowsza">;
+export type DaneWersji = Pick<
+  WersjaOferty,
+  | "data_oferty"
+  | "termin_realizacji"
+  | "data_waznosci_cen"
+  | "adres_inwestycji"
+  | "poziom_wyceny"
+  | "cena_calosc_gr"
+  | "rabat_termin_gr"
+  | "rabat_calosc_bp"
+  | "stawka_vat"
+  | "tryb_cen"
+  | "koszt_wlasny_gr"
+  | "klauzule"
+  | "uwagi"
+>;
 
 export interface WersjaKrotko {
   id: number;
   nr_wersji: number;
   data_oferty: string | null;
   utworzono: string;
+  wyslano: string | null;
 }
 
 export interface PelnaWersja {
@@ -307,8 +379,8 @@ export interface ZmianaPola {
 }
 
 export interface Roznica {
-  poziom: "naglowek" | "wycena" | "sekcja" | "czesc" | "wiersz";
-  zmiana: "dodano" | "usunieto" | "zmieniono";
+  poziom: "naglowek" | "wycena" | "sekcja" | "czesc" | "wiersz" | "zdjecie";
+  zmiana: "dodano" | "usunieto" | "zmieniono" | "przeniesiono";
   sciezka: string;
   pola: ZmianaPola[];
 }
