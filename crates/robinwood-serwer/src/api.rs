@@ -9,6 +9,7 @@
 //!
 //! Klucz dostępu: nagłówek `Authorization: Bearer <klucz>` (lub parametr `klucz` dla WebSocket).
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -31,6 +32,9 @@ use crate::zdarzenia::{Operacja, Rozglosnia, Zdarzenie};
 pub struct StanApi {
     pub pula: SqlitePool,
     pub zdarzenia: Rozglosnia,
+    /// Folder danych serwera (pliki, zdjęcia). Domyślnie katalog tymczasowy – `uruchom`
+    /// ustawia folder obok pliku bazy.
+    pub folder_danych: Arc<PathBuf>,
     klucz_api: Arc<str>,
     nazwa: Arc<str>,
 }
@@ -40,9 +44,16 @@ impl StanApi {
         Self {
             pula,
             zdarzenia: Rozglosnia::default(),
+            folder_danych: Arc::new(std::env::temp_dir().join("robinwood-dane")),
             klucz_api: klucz_api.into(),
             nazwa: nazwa.into(),
         }
+    }
+
+    /// Ustawia folder danych serwera (pliki przesłane przez stanowiska).
+    pub fn z_folderem_danych(mut self, folder: PathBuf) -> Self {
+        self.folder_danych = Arc::new(folder);
+        self
     }
 }
 
@@ -57,6 +68,8 @@ pub fn router(stan: StanApi) -> Router {
         .route("/slowniki/{kod}", get(pozycje_slownika))
         .route("/kategorie-materialow", get(kategorie_materialow))
         .route("/zdarzenia", get(zdarzenia_ws))
+        // Faza 2: specyfikacje, oferty, szablony, zdjęcia, eksport (crate::api_oferty)
+        .merge(crate::api_oferty::trasy())
         .route_layer(middleware::from_fn_with_state(stan.clone(), sprawdz_klucz));
 
     let api = Router::new().route("/status", get(status)).merge(chronione);

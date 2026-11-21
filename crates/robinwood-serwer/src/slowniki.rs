@@ -20,6 +20,8 @@ pub struct PozycjaSlownika {
     pub dekor: Option<String>,
     pub kategoria_materialu_id: Option<i64>,
     pub kolejnosc: i64,
+    /// Podpowiadana podgrupa wiersza specyfikacji (np. „wyposazenie”) – od migracji 0002.
+    pub podgrupa: Option<String>,
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -42,7 +44,7 @@ pub async fn lista_slownikow(pula: &SqlitePool) -> Wynik<Vec<Slownik>> {
 
 pub async fn pozycje(pula: &SqlitePool, kod: &str) -> Wynik<Vec<PozycjaSlownika>> {
     Ok(sqlx::query_as(
-        "SELECT id, slownik_kod, wartosc, producent, dekor, kategoria_materialu_id, kolejnosc \
+        "SELECT id, slownik_kod, wartosc, producent, dekor, kategoria_materialu_id, kolejnosc, podgrupa \
          FROM pozycje_slownika WHERE slownik_kod = ?1 AND aktywna = 1 ORDER BY kolejnosc, wartosc",
     )
     .bind(kod)
