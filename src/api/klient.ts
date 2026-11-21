@@ -25,6 +25,7 @@ import type {
   StatusSerwera,
   Zdarzenie,
   BladPozycji,
+  CzasDostawy,
   KonfliktPola,
   ZmianaCzesciowa,
 } from "./typy";
@@ -143,6 +144,8 @@ export class KlientApi {
     pozycje: (kod: string) =>
       this.zadanie<PozycjaSlownika[]>("GET", `/slowniki/${encodeURIComponent(kod)}`),
     kategorieMaterialow: () => this.zadanie<KategoriaMaterialu[]>("GET", "/kategorie-materialow"),
+    /** Czasy dostaw par kategoria + dostawca (silnik terminów). */
+    czasyDostaw: () => this.zadanie<CzasDostawy[]>("GET", "/czasy-dostaw"),
   };
 
   // --- Faza 2: specyfikacja (wspólna dla ofert i umów) ---

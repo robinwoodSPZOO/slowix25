@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import { CircleCheck, FileUp, LayoutTemplate, TriangleAlert } from "lucide-react";
 import { BladApi } from "../../api/klient";
-import type { BladPozycji, KategoriaMaterialu, PozycjaSlownika, RaportImportu, Slownik, SzablonMebli } from "../../api/typy";
+import type { BladPozycji, CzasDostawy, KategoriaMaterialu, PozycjaSlownika, RaportImportu, Slownik, SzablonMebli } from "../../api/typy";
 import { usePolaczenie } from "../../kontekst/Polaczenie";
 import { EtykietaStatusu, Przycisk, WierszTabeli } from "../../ui";
 import "./slowniki.css";
@@ -18,6 +18,7 @@ export function Slowniki() {
   const [pozycje, ustawPozycje] = useState<PozycjaSlownika[]>([]);
   const [szablony, ustawSzablony] = useState<SzablonMebli[]>([]);
   const [kategorie, ustawKategorie] = useState<KategoriaMaterialu[]>([]);
+  const [czasy, ustawCzasy] = useState<CzasDostawy[]>([]);
   const [raport, ustawRaport] = useState<{ rodzaj: Rodzaj; r: RaportImportu } | null>(null);
   const [blad, ustawBlad] = useState<string | null>(null);
   const [bledyImportu, ustawBledyImportu] = useState<BladPozycji[]>([]);
@@ -29,6 +30,7 @@ export function Slowniki() {
     api.slowniki.lista().then(ustawSlowniki, (e: Error) => ustawBlad(e.message));
     api.szablony.lista().then(ustawSzablony, (e: Error) => ustawBlad(e.message));
     api.slowniki.kategorieMaterialow().then(ustawKategorie, (e: Error) => ustawBlad(e.message));
+    api.slowniki.czasyDostaw().then(ustawCzasy, (e: Error) => ustawBlad(e.message));
   }, [api, ostatnieZdarzenie, raport]);
 
   const wybrany = kod ?? slowniki[0]?.kod ?? null;
@@ -205,7 +207,39 @@ export function Slowniki() {
           </tbody>
         </table>
       </div>
-      <p className="pole__pomoc">Edycja słowników, dostawców i widełek czasów dostaw – kolejne fazy.</p>
+      <h3>Czasy dostaw u dostawców (para kategoria + dostawca)</h3>
+      <div className="karta">
+        <table className="tabela">
+          <thead>
+            <tr>
+              <th>Kategoria</th>
+              <th>Dostawca</th>
+              <th>Dostawa od–do (dni)</th>
+              <th>Średnia rzeczywista</th>
+            </tr>
+          </thead>
+          <tbody>
+            {czasy.map((c) => (
+              <tr key={c.id}>
+                <td>{c.kategoria_nazwa}</td>
+                <td>{c.dostawca_nazwa}</td>
+                <td>
+                  {c.dni_min}–{c.dni_max}
+                </td>
+                <td>{c.dni_srednia_rzeczywista === null ? "—" : c.dni_srednia_rzeczywista.toLocaleString("pl-PL", { maximumFractionDigits: 1 })}</td>
+              </tr>
+            ))}
+            {czasy.length === 0 && (
+              <tr>
+                <td colSpan={4} className="tabela-wierszy__pusto">
+                  Brak czasów dla par kategoria + dostawca – silnik terminów używa widełek kategorii.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <p className="pole__pomoc">Widełki kategorii i czasy dostaw zmienia się przez API silnika terminów (PUT /kategorie-materialow/&#123;id&#125;/widelki, /czasy-dostaw); edycja w interfejsie – w module Kalendarz.</p>
     </div>
   );
 }

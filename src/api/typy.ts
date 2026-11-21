@@ -430,3 +430,19 @@ export interface DaneFirmy {
 
 /** Podpowiedzi edytora: kod słownika → pozycje. */
 export type Podpowiedzi = Record<string, PozycjaSlownika[]>;
+
+// ---------------------------------------------------------------------------
+// Silnik terminów (Faza 4a) – tylko to, czego używa dziś interfejs; pełny kontrakt API:
+// docs/ARCHITEKTURA.md, rozdz. „Silnik terminów”, typy serde w crates/robinwood-serwer/src/terminarz.rs.
+// ---------------------------------------------------------------------------
+
+export interface CzasDostawy {
+  id: number;
+  kategoria_id: number;
+  kategoria_nazwa: string;
+  dostawca_id: number;
+  dostawca_nazwa: string;
+  dni_min: number;
+  dni_max: number;
+  dni_srednia_rzeczywista: number | null;
+}

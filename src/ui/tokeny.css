@@ -50,6 +50,10 @@
   --zadanie-zamowienie: #00896a;
   --zadanie-rysunki: #b8578f;
   --zadanie-pomiar: #2b8fcb;
+  /* typy pomocnicze silnika terminów (płatności, terminy klienta, ręczne) – wyciszone */
+  --zadanie-platnosc: #6b5b95;
+  --zadanie-klient: #a0522d;
+  --zadanie-inne: #7d7a72;
 
   /* --- Typografia --- */
   --font: "Inter Variable", Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
