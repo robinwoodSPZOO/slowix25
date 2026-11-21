@@ -864,4 +864,109 @@ mod testy {
             }
         }
     }
+    /// Wartości oczekiwane policzone ręcznie (niezależnie od kodu) – wykrywają jednolite
+    /// przesunięcie o dzień, którego test kolejności nie zauważy.
+    #[test]
+    fn wartosci_oczekiwane_robocze_boze_cialo_2029() {
+        let ust = UstawieniaTerminow::default(); // robocze, odstępy 7
+        let z = ZlecenieWejscie {
+            czas_montazu_dni: 2,
+            ..zlecenie(d(2029, 6, 4), 5)
+        };
+        let h = policz_harmonogram(&z, &[material(1, "Płyta", 3, 6)], &ust, &[]).unwrap();
+        // montaż pon. 4–5.06; warsztat 5 dni rob. wstecz (31.05 Boże Ciało): 1.06, 30, 29, 28, 25.05
+        assert_eq!(h.montaz_do, d(2029, 6, 5));
+        assert_eq!(h.warsztat_od, Some(d(2029, 5, 25)));
+        assert_eq!(h.warsztat_do, Some(d(2029, 6, 1)));
+        // dostawa: 7 dni rob. przed 25.05 → 16.05
+        assert_eq!(h.data_wymaganej_dostawy, d(2029, 5, 16));
+        let m = &h.materialy[0];
+        assert_eq!(m.data_sweet_spot, Some(d(2029, 5, 8)));
+        assert_eq!(m.data_planowa, Some(d(2029, 5, 10)));
+        assert_eq!(m.data_krytyczna, Some(d(2029, 5, 11)));
+        // rysunki: 7 dni rob. przed 10.05 (1 i 3.05 święta) → 27.04; pomiar → 18.04
+        assert_eq!(h.rysunki_do, d(2029, 4, 27));
+        assert_eq!(h.pomiar_do, d(2029, 4, 18));
+        assert_eq!(zadanie(&h, "potwierdzenie_montazu").data_od, d(2029, 5, 23));
+        assert_eq!(zadanie(&h, "pomieszczenie_gotowe").data_od, d(2029, 5, 29));
+    }
+
+    #[test]
+    fn wartosci_oczekiwane_kalendarzowe_wielkanoc_2030() {
+        let z = zlecenie(d(2030, 4, 23), 10);
+        let h =
+            policz_harmonogram(&z, &[material(1, "Płyta", 5, 10)], &kalendarzowe(), &[]).unwrap();
+        // 23.04 − 10 = 13.04 (sob.) → 12.04; koniec warsztatu 22.04 (Pon. Wielkanocny) → 19.04
+        assert_eq!(h.warsztat_od, Some(d(2030, 4, 12)));
+        assert_eq!(h.warsztat_do, Some(d(2030, 4, 19)));
+        assert_eq!(h.montaz_do, d(2030, 4, 25));
+        assert_eq!(h.data_wymaganej_dostawy, d(2030, 4, 5));
+        let m = &h.materialy[0];
+        assert_eq!(m.data_sweet_spot, Some(d(2030, 3, 26)));
+        assert_eq!(m.data_planowa, Some(d(2030, 3, 29)));
+        // 5.04 − 5 = 31.03 (niedz.) → 29.03
+        assert_eq!(m.data_krytyczna, Some(d(2030, 3, 29)));
+        assert_eq!(h.rysunki_do, d(2030, 3, 22));
+        assert_eq!(h.pomiar_do, d(2030, 3, 15));
+        assert_eq!(zadanie(&h, "potwierdzenie_montazu").data_od, d(2030, 4, 16));
+        // 23.04 − 3 = 20.04 (sob.) → 19.04
+        assert_eq!(zadanie(&h, "pomieszczenie_gotowe").data_od, d(2030, 4, 19));
+    }
+
+    /// Kolizja montażu w trybie roboczym (montaż przeskakuje weekend), której nie ma
+    /// w kalendarzowym.
+    #[test]
+    fn kolizje_w_trybie_roboczym() {
+        use crate::kalendarz::{wykryj_kolizje, Kolizja, Okres};
+        let okresy = |ust: &UstawieniaTerminow| {
+            let a = ZlecenieWejscie {
+                id: 1,
+                czas_montazu_dni: 3,
+                ..zlecenie(d(2027, 1, 7), 5)
+            };
+            let b = ZlecenieWejscie {
+                id: 2,
+                czas_montazu_dni: 1,
+                ..zlecenie(d(2027, 1, 11), 2)
+            };
+            let mut v = Vec::new();
+            for z in [a, b] {
+                let h = policz_harmonogram(&z, &[], ust, &[]).unwrap();
+                v.push(Okres {
+                    zlecenie_id: z.id,
+                    typ: TypZadania::Montaz,
+                    od: h.montaz_od,
+                    do_: h.montaz_do,
+                });
+                v.push(Okres {
+                    zlecenie_id: z.id,
+                    typ: TypZadania::Warsztat,
+                    od: h.warsztat_od.unwrap(),
+                    do_: h.warsztat_do.unwrap(),
+                });
+            }
+            v
+        };
+        let rob = okresy(&UstawieniaTerminow::default());
+        // A: montaż 7, 8, 11.01; warsztat 29.12–5.01 (1 i 6.01 święta); B: montaż 11.01, warsztat 7–8.01
+        assert_eq!(rob[0].do_, d(2027, 1, 11));
+        assert_eq!(rob[1].od, d(2026, 12, 29));
+        assert_eq!(rob[1].do_, d(2027, 1, 5));
+        assert_eq!(rob[3].od, d(2027, 1, 7));
+        assert_eq!(rob[3].do_, d(2027, 1, 8));
+        assert_eq!(
+            wykryj_kolizje(&rob),
+            vec![Kolizja {
+                typ: TypZadania::Montaz,
+                zlecenie_a: 1,
+                zlecenie_b: 2,
+                od: d(2027, 1, 11),
+                do_: d(2027, 1, 11),
+            }]
+        );
+        // kalendarzowo montaż A kończy się 9.01 – brak kolizji montażu
+        assert!(wykryj_kolizje(&okresy(&kalendarzowe()))
+            .iter()
+            .all(|k| k.typ != TypZadania::Montaz));
+    }
 }

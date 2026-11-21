@@ -72,7 +72,8 @@ pub struct DaneZamowienia {
 /// * `sweet spot ≤ dziś ≤ planowa` → spokojnie („w oknie zamówienia”),
 /// * `dziś > planowa` → żółty,
 /// * `dziś ≥ krytyczna − prog_pomaranczowy` (w trybie liczenia dni) → pomarańczowy,
-/// * `dziś > krytyczna` → czerwony + przesunięcie montażu przy zamówieniu dziś.
+/// * `dziś > krytyczna` → czerwony + przesunięcie montażu przy zamówieniu dziś
+///   (`nowy_termin_montazu` zawsze w dniu roboczym).
 ///
 /// Gdy kilka warunków jest spełnionych, wygrywa najpilniejszy.
 pub fn stan_zamowienia(
@@ -165,11 +166,14 @@ pub fn stan_wykonane(kiedy: NaiveDate) -> StanZadania {
     StanZadania::nowy(Stan::Wykonane, format!("Wykonano {kiedy}"), None)
 }
 
+/// Nowy termin rozpoczęcia montażu po przesunięciu o `dni` (w trybie liczenia). Wynik zawsze
+/// wypada w dzień roboczy: w trybie kalendarzowym `d + dni` przypadające w dzień wolny
+/// przechodzi na najbliższy **następny** dzień roboczy (w roboczym `naprzod` już to zapewnia).
 fn przesun(kal: &KalendarzDni, d: NaiveDate, dni: i64) -> NaiveDate {
     if dni <= 0 {
         return d;
     }
-    kal.naprzod(d, u32::try_from(dni).unwrap_or(u32::MAX))
+    kal.nastepny_roboczy(kal.naprzod(d, u32::try_from(dni).unwrap_or(u32::MAX)))
 }
 
 #[cfg(test)]
@@ -272,5 +276,72 @@ mod testy {
             Some(-1)
         );
         assert_eq!(stan_wykonane(d(2026, 12, 19)).stan, Stan::Wykonane);
+    }
+    /// Wartości oczekiwane policzone ręcznie: progi w trybie roboczym, próg pomarańczowy
+    /// wypadający w weekend (oba tryby), nowy termin montażu na dzień roboczy.
+    #[test]
+    fn wartosci_oczekiwane_progow() {
+        let rob = (
+            ust(LiczenieDni::Robocze),
+            KalendarzDni::nowy(LiczenieDni::Robocze, []),
+        );
+        let kal = (
+            ust(LiczenieDni::Kalendarzowe),
+            KalendarzDni::nowy(LiczenieDni::Kalendarzowe, []),
+        );
+        // kalendarzowo: krytyczna pon. 8.03.2027 − 2 = sob. 6.03 → próg pt. 5.03
+        let z = DaneZamowienia {
+            sweet_spot: d(2027, 2, 24),
+            planowa: d(2027, 3, 1),
+            krytyczna: d(2027, 3, 8),
+            wymagana_dostawa: d(2027, 3, 15),
+            dni_srednia: 5,
+            montaz_od: d(2027, 4, 12),
+        };
+        let s = |dzis, (u, k): &(UstawieniaTerminow, KalendarzDni), z: &DaneZamowienia| {
+            stan_zamowienia(z, dzis, u, k).stan
+        };
+        assert_eq!(s(d(2027, 3, 4), &kal, &z), Stan::Zolty);
+        assert_eq!(s(d(2027, 3, 5), &kal, &z), Stan::Pomaranczowy);
+        assert_eq!(s(d(2027, 3, 8), &kal, &z), Stan::Pomaranczowy);
+        assert_eq!(s(d(2027, 3, 9), &kal, &z), Stan::Czerwony);
+        // robocze: krytyczna wt. 9.03 − 2 dni rob. = pt. 5.03; sobota 6.03 już pomarańczowa
+        let zr = DaneZamowienia {
+            krytyczna: d(2027, 3, 9),
+            ..z
+        };
+        assert_eq!(s(d(2027, 3, 1), &rob, &zr), Stan::Spokojnie);
+        assert_eq!(s(d(2027, 3, 2), &rob, &zr), Stan::Zolty);
+        assert_eq!(s(d(2027, 3, 4), &rob, &zr), Stan::Zolty);
+        assert_eq!(s(d(2027, 3, 5), &rob, &zr), Stan::Pomaranczowy);
+        assert_eq!(s(d(2027, 3, 6), &rob, &zr), Stan::Pomaranczowy);
+        // czerwony robocze: śr. 10.03 + 5 dni rob. = 17.03; [15.03, 17.03) = 2 → montaż 12.04 → 14.04
+        let cz = stan_zamowienia(&zr, d(2027, 3, 10), &rob.0, &rob.1);
+        assert_eq!(cz.stan, Stan::Czerwony);
+        assert_eq!(cz.przesuniecie_montazu_dni, Some(2));
+        assert_eq!(cz.nowy_termin_montazu, Some(d(2027, 4, 14)));
+        // czerwony kalendarzowo: 20.03 + 10 = 30.03, wymagana 25.03 → 5 dni; 26.04 + 5 = sob. 1.05
+        // (święto), 2.05 niedz., 3.05 święto → wt. 4.05
+        let zk = DaneZamowienia {
+            sweet_spot: d(2027, 3, 1),
+            planowa: d(2027, 3, 10),
+            krytyczna: d(2027, 3, 19),
+            wymagana_dostawa: d(2027, 3, 25),
+            dni_srednia: 10,
+            montaz_od: d(2027, 4, 26),
+        };
+        let cz = stan_zamowienia(&zk, d(2027, 3, 20), &kal.0, &kal.1);
+        assert_eq!(cz.przesuniecie_montazu_dni, Some(5));
+        assert_eq!(cz.nowy_termin_montazu, Some(d(2027, 5, 4)));
+        // przykład kontrolny MDF, dziś 2.01.2027: 8.02 + 5 = sob. 13.02 → pon. 15.02
+        let cz = stan_zamowienia(&mdf(), d(2027, 1, 2), &kal.0, &kal.1);
+        assert_eq!(cz.przesuniecie_montazu_dni, Some(5));
+        assert_eq!(cz.nowy_termin_montazu, Some(d(2027, 2, 15)));
+        // termin prosty robocze: pon. 15.03 − 3 dni rob. = śr. 10.03
+        let t = |dzis| stan_terminu(d(2027, 3, 15), dzis, &rob.0, &rob.1).stan;
+        assert_eq!(t(d(2027, 3, 9)), Stan::Spokojnie);
+        assert_eq!(t(d(2027, 3, 10)), Stan::Zolty);
+        assert_eq!(t(d(2027, 3, 15)), Stan::Zolty);
+        assert_eq!(t(d(2027, 3, 16)), Stan::Czerwony);
     }
 }

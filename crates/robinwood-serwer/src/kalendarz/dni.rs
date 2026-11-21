@@ -60,8 +60,19 @@ pub struct Swieto {
     pub nazwa: &'static str,
 }
 
+/// Zakres lat obsługiwany przez API (święta, daty wejściowe). Poza nim dane wejściowe są
+/// odrzucane (422), co chroni też arytmetykę dat przed przepełnieniem.
+pub const ROK_MIN: i32 = 1990;
+pub const ROK_MAX: i32 = 2100;
+
+/// Czy rok mieści się w obsługiwanym zakresie [`ROK_MIN`]–[`ROK_MAX`].
+pub fn obslugiwany_rok(rok: i32) -> bool {
+    (ROK_MIN..=ROK_MAX).contains(&rok)
+}
+
 /// Niedziela Wielkanocna (algorytm Meeusa/Jonesa/Butchera, kalendarz gregoriański).
-pub fn wielkanoc(rok: i32) -> NaiveDate {
+/// `None` tylko dla lat spoza zakresu dat `chrono`.
+pub fn wielkanoc(rok: i32) -> Option<NaiveDate> {
     let a = rok % 19;
     let b = rok / 100;
     let c = rok % 100;
@@ -76,14 +87,27 @@ pub fn wielkanoc(rok: i32) -> NaiveDate {
     let m = (a + 11 * h + 22 * l) / 451;
     let miesiac = (h + l - 7 * m + 114) / 31;
     let dzien = (h + l - 7 * m + 114) % 31 + 1;
-    NaiveDate::from_ymd_opt(rok, miesiac as u32, dzien as u32).expect("poprawna data Wielkanocy")
+    NaiveDate::from_ymd_opt(
+        rok,
+        u32::try_from(miesiac).ok()?,
+        u32::try_from(dzien).ok()?,
+    )
 }
 
 /// Polskie święta ustawowo wolne od pracy w danym roku (ustawa z 18.01.1951 r. z późn. zm.),
 /// posortowane po dacie. Trzech Króli od 2011 r., Wigilia od 2025 r.
+/// Dla lat spoza zakresu dat `chrono` zwraca pustą listę (API przyjmuje tylko
+/// [`ROK_MIN`]–[`ROK_MAX`]).
 pub fn swieta(rok: i32) -> Vec<Swieto> {
-    let d = |m: u32, dz: u32| NaiveDate::from_ymd_opt(rok, m, dz).expect("poprawna data");
-    let wn = wielkanoc(rok);
+    let (Some(wn), Some(_), Some(_)) = (
+        wielkanoc(rok),
+        NaiveDate::from_ymd_opt(rok, 1, 1),
+        NaiveDate::from_ymd_opt(rok, 12, 31),
+    ) else {
+        return Vec::new();
+    };
+    // rok mieści się w zakresie chrono (sprawdzone wyżej), więc każda data z dniem ≤ 31 istnieje
+    let d = |m: u32, dz: u32| NaiveDate::from_ymd_opt(rok, m, dz).unwrap_or(wn);
     let mut v = vec![
         Swieto {
             data: d(1, 1),
@@ -171,7 +195,8 @@ pub fn nazwa_swieta(data: NaiveDate) -> Option<&'static str> {
     if stale.is_some() || !(3..=6).contains(&data.month()) {
         return stale;
     }
-    match (data - wielkanoc(rok)).num_days() {
+    let wn = wielkanoc(rok)?;
+    match (data - wn).num_days() {
         0 => Some("Wielkanoc"),
         1 => Some("Poniedziałek Wielkanocny"),
         49 => Some("Zielone Świątki"),
@@ -355,7 +380,7 @@ mod testy {
             ),
         ];
         for (rok, wn, pon, ziel, boze) in oczekiwane {
-            assert_eq!(wielkanoc(rok), wn, "Wielkanoc {rok}");
+            assert_eq!(wielkanoc(rok), Some(wn), "Wielkanoc {rok}");
             assert_eq!(nazwa_swieta(pon), Some("Poniedziałek Wielkanocny"));
             assert_eq!(nazwa_swieta(ziel), Some("Zielone Świątki"));
             assert_eq!(nazwa_swieta(boze), Some("Boże Ciało"));
@@ -364,9 +389,13 @@ mod testy {
             assert_eq!(swieta(rok).len(), 14);
         }
         // znane daty Wielkanocy dla kontroli algorytmu
-        assert_eq!(wielkanoc(2024), d(2024, 3, 31));
-        assert_eq!(wielkanoc(2025), d(2025, 4, 20));
-        assert_eq!(wielkanoc(2038), d(2038, 4, 25));
+        assert_eq!(wielkanoc(2024), Some(d(2024, 3, 31)));
+        assert_eq!(wielkanoc(2025), Some(d(2025, 4, 20)));
+        assert_eq!(wielkanoc(2038), Some(d(2038, 4, 25)));
+        // poza zakresem dat chrono – bez paniki
+        assert_eq!(wielkanoc(300_000), None);
+        assert!(swieta(300_000).is_empty());
+        assert!(!obslugiwany_rok(-5) && !obslugiwany_rok(2101) && obslugiwany_rok(2030));
     }
 
     #[test]
@@ -492,6 +521,95 @@ mod testy {
                 }
                 dzien += Duration::days(1);
             }
+        }
+    }
+    /// Wartości oczekiwane policzone ręcznie (w tym święta 2029–2030) – niezależne od kodu.
+    #[test]
+    fn wartosci_oczekiwane_2029_2030() {
+        // Wielkanoc 2029: 1.04, 2030: 21.04; Boże Ciało 31.05.2029, 20.06.2030
+        assert_eq!(wielkanoc(2029), Some(d(2029, 4, 1)));
+        assert_eq!(wielkanoc(2030), Some(d(2030, 4, 21)));
+        assert_eq!(nazwa_swieta(d(2029, 5, 31)), Some("Boże Ciało"));
+        assert_eq!(nazwa_swieta(d(2030, 6, 20)), Some("Boże Ciało"));
+        assert_eq!(nazwa_swieta(d(2030, 6, 9)), Some("Zielone Świątki"));
+        let przypadki: [(&str, NaiveDate); 13] = [
+            // wt. 3.04.2029 − 1 rob.: Pon. Wielkanocny, Wielkanoc, sobota → pt. 30.03
+            ("rob wstecz 3.04.2029 1", rob().wstecz(d(2029, 4, 3), 1)),
+            ("rob wstecz 3.04.2029 3", rob().wstecz(d(2029, 4, 3), 3)),
+            ("kal wstecz 3.04.2029 1", kal().wstecz(d(2029, 4, 3), 1)),
+            ("rob wstecz 1.06.2029 1", rob().wstecz(d(2029, 6, 1), 1)),
+            ("rob naprzod 30.05.2029 2", rob().naprzod(d(2029, 5, 30), 2)),
+            ("rob wstecz 23.04.2030 1", rob().wstecz(d(2030, 4, 23), 1)),
+            ("rob wstecz 21.06.2030 1", rob().wstecz(d(2030, 6, 21), 1)),
+            // Trzech Króli 2030 w niedzielę
+            ("kal wstecz 7.01.2030 1", kal().wstecz(d(2030, 1, 7), 1)),
+            ("rob wstecz 2.01.2030 3", rob().wstecz(d(2030, 1, 2), 3)),
+            // Wigilia 2029 w poniedziałek
+            ("rob wstecz 27.12.2029 1", rob().wstecz(d(2029, 12, 27), 1)),
+            (
+                "rob termin_od 21.12.2029 2",
+                rob().termin_od(d(2029, 12, 21), 2),
+            ),
+            (
+                "kal termin_od 14.12.2029 10",
+                kal().termin_od(d(2029, 12, 14), 10),
+            ),
+            ("rob wstecz 4.05.2029 2", rob().wstecz(d(2029, 5, 4), 2)),
+        ];
+        let oczekiwane = [
+            d(2029, 3, 30),
+            d(2029, 3, 28),
+            d(2029, 3, 30),
+            d(2029, 5, 30),
+            d(2029, 6, 4),
+            d(2030, 4, 19),
+            d(2030, 6, 19),
+            d(2030, 1, 4),
+            d(2029, 12, 27),
+            d(2029, 12, 21),
+            d(2029, 12, 28),
+            d(2029, 12, 27),
+            d(2029, 4, 30),
+        ];
+        for ((opis, wynik), ocz) in przypadki.iter().zip(oczekiwane) {
+            assert_eq!(*wynik, ocz, "{opis}");
+        }
+        // [30.04, 7.05.2029): 30.04, 2.05, 4.05 robocze
+        assert_eq!(rob().roznica(d(2029, 4, 30), d(2029, 5, 7)), 3);
+    }
+
+    /// Maksymalność `wstecz` w trybie kalendarzowym: wynik jest NAJPÓŹNIEJSZYM dniem roboczym
+    /// X z `[X, d)` ≥ n, czyli wszystkie dni w `(X, d − n]` są wolne. Tryb roboczy: `naprzod`
+    /// jest odwrotnością `wstecz` z dokładnością do przesunięcia na dzień roboczy.
+    #[test]
+    fn wlasnosci_maksymalnosc_i_naprzod() {
+        let k = kal();
+        let r = rob();
+        let mut dzien = d(2026, 1, 1);
+        while dzien <= d(2030, 12, 31) {
+            for n in 0..=30u32 {
+                let w = k.wstecz(dzien, n);
+                let granica = dzien - Duration::days(n.into());
+                assert!(w <= granica, "{dzien} {n}");
+                let mut x = w + Duration::days(1);
+                while x <= granica {
+                    assert!(!k.czy_roboczy(x), "{dzien} {n}: {x} roboczy, a wynik {w}");
+                    x += Duration::days(1);
+                }
+                // naprzód (kalendarzowo) = dokładnie n dni
+                assert_eq!(k.roznica(dzien, k.naprzod(dzien, n)), i64::from(n));
+                // tryb roboczy: [dzien, naprzod) ma n dni roboczych, wynik roboczy i minimalny
+                let p = r.naprzod(dzien, n);
+                assert!(r.czy_roboczy(p));
+                assert_eq!(r.roznica(dzien, p), i64::from(n), "{dzien} {n}");
+                if n > 0 {
+                    assert!(
+                        r.roznica(dzien, r.cofnij_do_roboczego(p - Duration::days(1)))
+                            < i64::from(n)
+                    );
+                }
+            }
+            dzien += Duration::days(1);
         }
     }
 }

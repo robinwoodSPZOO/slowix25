@@ -1,20 +1,31 @@
 //! Trasy API silnika terminów (zlecenia, materiały, zadania kalendarza, czasy dostaw,
 //! ustawienia odstępów, dni wolne). Kontrakt: `docs/ARCHITEKTURA.md`, rozdz. „Silnik terminów”.
 //!
-//! Każda zmiana danych rozsyła zdarzenie WebSocket. Dla zasobu `zadania_kalendarza` pole `id`
-//! to **id zlecenia**, którego zadania się zmieniły (`0` = wiele zleceń / zadanie bez zlecenia).
+//! Każda zmiana danych rozsyła zdarzenie WebSocket (po zatwierdzeniu transakcji). Dla zasobu
+//! `zadania_kalendarza` pole `id` to **id zlecenia**, którego zadania się zmieniły (`0` = wiele
+//! zleceń / zadanie bez zlecenia).
+//!
+//! Zapis danych i wywołane nim przeliczenie harmonogramu idą w **jednej transakcji**: błąd bazy
+//! wycofuje wszystko (500, nic nie zapisano); nieudane przeliczenie z powodu danych (np. brak
+//! terminu montażu) nie blokuje zapisu – zlecenie dostaje znacznik `harmonogram_nieaktualny`.
+//!
+//! Wejście: nieznane pola są odrzucane, a błędy deserializacji treści, ścieżki i parametrów
+//! zwracają 422 z JSON `{"blad": …}` (własne ekstraktory poniżej; trasy Klientów bez zmian).
 
-use axum::extract::{Path, Query, State};
+use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
+use axum::extract::{FromRequest, FromRequestParts, Request, State};
+use axum::http::request::Parts;
 use axum::http::StatusCode;
-use axum::routing::{get, put};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use chrono::NaiveDate;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::api::StanApi;
-use crate::bledy::Wynik;
+use crate::bledy::{BladApi, Wynik};
 use crate::kalendarz::{self, Harmonogram, Swieto, UstawieniaTerminow};
-use crate::terminarz::{self as t, ZadanieKalendarza};
+use crate::terminarz::{self as t, wej, Przeliczenie, ZadanieKalendarza};
 use crate::zdarzenia::{Operacja, Zdarzenie};
 
 pub fn trasy() -> Router<StanApi> {
@@ -29,9 +40,14 @@ pub fn trasy() -> Router<StanApi> {
             "/zlecenia/{id}/harmonogram",
             get(podglad_harmonogramu).post(generuj_harmonogram),
         )
+        .route("/zlecenia/{id}/przelicz", post(przelicz_zlecenie))
         .route(
             "/zamowienia-materialow/{id}",
             put(zmien_material).delete(usun_material),
+        )
+        .route(
+            "/zamowienia-materialow/{id}/cofnij-zamowienie",
+            post(cofnij_zamowienie),
         )
         .route("/dostawcy", get(lista_dostawcow).post(dodaj_dostawce))
         .route("/dostawcy/{id}", put(zmien_dostawce))
@@ -58,10 +74,57 @@ pub fn trasy() -> Router<StanApi> {
             put(ustaw_dzien_wolny).delete(usun_dzien_wolny),
         )
         .route("/kalendarz/swieta", get(swieta))
-        .route(
-            "/kalendarz/przelicz",
-            axum::routing::post(przelicz_wszystko),
-        )
+        .route("/kalendarz/przelicz", post(przelicz_wszystko))
+}
+
+// --- Ekstraktory z błędami w JSON ------------------------------------------
+
+/// Treść JSON; błąd → 422 `{"blad": …}` (zamiast tekstowej odpowiedzi axum).
+struct Cialo<T>(T);
+
+impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for Cialo<T> {
+    type Rejection = BladApi;
+
+    async fn from_request(req: Request, stan: &S) -> Result<Self, Self::Rejection> {
+        Json::<T>::from_request(req, stan)
+            .await
+            .map(|Json(v)| Cialo(v))
+            .map_err(|e: JsonRejection| {
+                BladApi::NieprawidloweDane(format!("treść żądania: {}", e.body_text()))
+            })
+    }
+}
+
+/// Parametry ścieżki; błąd → 422 JSON.
+struct Sciezka<T>(T);
+
+impl<S: Send + Sync, T: DeserializeOwned + Send> FromRequestParts<S> for Sciezka<T> {
+    type Rejection = BladApi;
+
+    async fn from_request_parts(parts: &mut Parts, stan: &S) -> Result<Self, Self::Rejection> {
+        axum::extract::Path::<T>::from_request_parts(parts, stan)
+            .await
+            .map(|axum::extract::Path(v)| Sciezka(v))
+            .map_err(|e: PathRejection| {
+                BladApi::NieprawidloweDane(format!("ścieżka: {}", e.body_text()))
+            })
+    }
+}
+
+/// Parametry zapytania; błąd (także nieznany parametr) → 422 JSON.
+struct Parametry<T>(T);
+
+impl<S: Send + Sync, T: DeserializeOwned> FromRequestParts<S> for Parametry<T> {
+    type Rejection = BladApi;
+
+    async fn from_request_parts(parts: &mut Parts, stan: &S) -> Result<Self, Self::Rejection> {
+        axum::extract::Query::<T>::from_request_parts(parts, stan)
+            .await
+            .map(|axum::extract::Query(v)| Parametry(v))
+            .map_err(|e: QueryRejection| {
+                BladApi::NieprawidloweDane(format!("parametry: {}", e.body_text()))
+            })
+    }
 }
 
 fn dzis_serwera() -> NaiveDate {
@@ -85,23 +148,32 @@ fn zmienione_zadania(stan: &StanApi, zlecenie_id: Option<i64>) {
     );
 }
 
-async fn przelicz_wszystko_i_powiadom(stan: &StanApi) -> Wynik<Vec<i64>> {
-    let ids = t::przelicz_wszystkie(&stan.pula).await?;
-    for id in &ids {
+/// Zdarzenia po przeliczeniu wszystkich zleceń: zadania – tylko gdy faktycznie się zmieniły,
+/// zlecenia – gdy dostały znacznik nieaktualności.
+fn powiadom_o_przeliczeniu(stan: &StanApi, p: &t::WynikPrzeliczeniaWszystkich) {
+    for id in &p.zmienione_zlecenia {
         zmienione_zadania(stan, Some(*id));
     }
-    Ok(ids)
+    for n in &p.nieprzeliczone_zlecenia {
+        zdarzenie(stan, "zlecenia", n.zlecenie_id, Operacja::Zmiana);
+    }
 }
 
 #[derive(Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 struct ParametrDzis {
+    #[serde(deserialize_with = "wej::data_opt")]
     dzis: Option<NaiveDate>,
+    #[serde(deserialize_with = "wej::data_opt")]
     horyzont: Option<NaiveDate>,
+    #[serde(deserialize_with = "wej::data_opt")]
     od: Option<NaiveDate>,
-    #[serde(rename = "do")]
+    #[serde(rename = "do", deserialize_with = "wej::data_opt")]
     do_: Option<NaiveDate>,
     rok: Option<i32>,
+    /// Klucz API w parametrze (sprawdza go warstwa dostępu).
+    #[serde(rename = "klucz")]
+    _klucz: Option<String>,
 }
 
 // --- Zlecenia --------------------------------------------------------------
@@ -112,21 +184,22 @@ async fn lista_zlecen(State(s): State<StanApi>) -> Wynik<Json<Vec<t::Zlecenie>>>
 
 async fn pobierz_zlecenie(
     State(s): State<StanApi>,
-    Path(id): Path<i64>,
+    Sciezka(id): Sciezka<i64>,
 ) -> Wynik<Json<t::Zlecenie>> {
     Ok(Json(t::zlecenie(&mut *s.pula.acquire().await?, id).await?))
 }
 
 async fn dodaj_zlecenie(
     State(s): State<StanApi>,
-    Json(d): Json<t::DaneZlecenia>,
+    Cialo(d): Cialo<t::DaneZlecenia>,
 ) -> Wynik<(StatusCode, Json<t::Zlecenie>)> {
-    let z = t::zapisz_zlecenie(&s.pula, None, d).await?;
+    let (z, _) = t::zapisz_zlecenie(&s.pula, None, d).await?;
     zdarzenie(&s, "zlecenia", z.id, Operacja::Dodanie);
     Ok((StatusCode::CREATED, Json(z)))
 }
 
 /// Zlecenie po zmianie; `harmonogram_przeliczony` = czy istniejący harmonogram przeliczono.
+/// Gdy przeliczenie się nie udało: `harmonogram_przeliczony: false`, `harmonogram_nieaktualny: true`.
 #[derive(Serialize)]
 struct ZlecenieIPrzeliczenie {
     #[serde(flatten)]
@@ -136,12 +209,11 @@ struct ZlecenieIPrzeliczenie {
 
 async fn zmien_zlecenie(
     State(s): State<StanApi>,
-    Path(id): Path<i64>,
-    Json(d): Json<t::DaneZlecenia>,
+    Sciezka(id): Sciezka<i64>,
+    Cialo(d): Cialo<t::DaneZlecenia>,
 ) -> Wynik<Json<ZlecenieIPrzeliczenie>> {
-    let z = t::zapisz_zlecenie(&s.pula, Some(id), d).await?;
+    let (z, p) = t::zapisz_zlecenie(&s.pula, Some(id), d).await?;
     zdarzenie(&s, "zlecenia", id, Operacja::Zmiana);
-    let p = t::przelicz_jesli_jest(&s.pula, id).await?;
     if p {
         zmienione_zadania(&s, Some(id));
     }
@@ -151,54 +223,74 @@ async fn zmien_zlecenie(
     }))
 }
 
+async fn przelicz_zlecenie(
+    State(s): State<StanApi>,
+    Sciezka(id): Sciezka<i64>,
+) -> Wynik<Json<ZlecenieIPrzeliczenie>> {
+    let (z, p) = t::przelicz_zlecenie(&s.pula, id).await?;
+    let przeliczono = matches!(p, Przeliczenie::Przeliczone(_));
+    match p {
+        Przeliczenie::Przeliczone(w) if w.dodane + w.zmienione + w.usuniete > 0 => {
+            zmienione_zadania(&s, Some(id))
+        }
+        Przeliczenie::Nieaktualne(_) => zdarzenie(&s, "zlecenia", id, Operacja::Zmiana),
+        _ => {}
+    }
+    Ok(Json(ZlecenieIPrzeliczenie {
+        zlecenie: z,
+        harmonogram_przeliczony: przeliczono,
+    }))
+}
+
 // --- Materiały -------------------------------------------------------------
 
 async fn lista_materialow(
     State(s): State<StanApi>,
-    Path(id): Path<i64>,
+    Sciezka(id): Sciezka<i64>,
 ) -> Wynik<Json<Vec<t::Material>>> {
     let mut c = s.pula.acquire().await?;
     t::zlecenie(&mut c, id).await?;
     Ok(Json(t::materialy(&mut c, id).await?))
 }
 
-async fn po_zmianie_materialu(
-    s: &StanApi,
-    material_id: i64,
-    zlecenie_id: i64,
-    op: Operacja,
-) -> Wynik<()> {
+fn po_zmianie_materialu(s: &StanApi, material_id: i64, zlecenie_id: i64, op: Operacja) {
     zdarzenie(s, "zamowienia_materialow", material_id, op);
-    if t::przelicz_jesli_jest(&s.pula, zlecenie_id).await? {
-        zmienione_zadania(s, Some(zlecenie_id));
-    }
-    Ok(())
+    zdarzenie(s, "zlecenia", zlecenie_id, Operacja::Zmiana);
+    zmienione_zadania(s, Some(zlecenie_id));
 }
 
 async fn dodaj_material(
     State(s): State<StanApi>,
-    Path(id): Path<i64>,
-    Json(d): Json<t::DaneMaterialu>,
+    Sciezka(id): Sciezka<i64>,
+    Cialo(d): Cialo<t::DaneMaterialu>,
 ) -> Wynik<(StatusCode, Json<t::Material>)> {
-    let m = t::zapisz_material(&s.pula, Some(id), None, d).await?;
-    po_zmianie_materialu(&s, m.id, id, Operacja::Dodanie).await?;
-    let m = t::material(&mut *s.pula.acquire().await?, m.id).await?;
+    let m = t::dodaj_material(&s.pula, id, d).await?;
+    po_zmianie_materialu(&s, m.id, id, Operacja::Dodanie);
     Ok((StatusCode::CREATED, Json(m)))
 }
 
 async fn zmien_material(
     State(s): State<StanApi>,
-    Path(id): Path<i64>,
-    Json(d): Json<t::DaneMaterialu>,
+    Sciezka(id): Sciezka<i64>,
+    Cialo(z): Cialo<t::ZmianaMaterialu>,
 ) -> Wynik<Json<t::Material>> {
-    let m = t::zapisz_material(&s.pula, None, Some(id), d).await?;
-    po_zmianie_materialu(&s, id, m.zlecenie_id, Operacja::Zmiana).await?;
-    Ok(Json(t::material(&mut *s.pula.acquire().await?, id).await?))
+    let m = t::zmien_material(&s.pula, id, z).await?;
+    po_zmianie_materialu(&s, id, m.zlecenie_id, Operacja::Zmiana);
+    Ok(Json(m))
 }
 
-async fn usun_material(State(s): State<StanApi>, Path(id): Path<i64>) -> Wynik<StatusCode> {
+async fn cofnij_zamowienie(
+    State(s): State<StanApi>,
+    Sciezka(id): Sciezka<i64>,
+) -> Wynik<Json<t::Material>> {
+    let m = t::cofnij_zamowienie(&s.pula, id).await?;
+    po_zmianie_materialu(&s, id, m.zlecenie_id, Operacja::Zmiana);
+    Ok(Json(m))
+}
+
+async fn usun_material(State(s): State<StanApi>, Sciezka(id): Sciezka<i64>) -> Wynik<StatusCode> {
     let zl = t::usun_material(&s.pula, id).await?;
-    po_zmianie_materialu(&s, id, zl, Operacja::Usuniecie).await?;
+    po_zmianie_materialu(&s, id, zl, Operacja::Usuniecie);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -206,7 +298,7 @@ async fn usun_material(State(s): State<StanApi>, Path(id): Path<i64>) -> Wynik<S
 
 async fn podglad_harmonogramu(
     State(s): State<StanApi>,
-    Path(id): Path<i64>,
+    Sciezka(id): Sciezka<i64>,
 ) -> Wynik<Json<Harmonogram>> {
     Ok(Json(t::podglad(&s.pula, id).await?))
 }
@@ -221,10 +313,12 @@ struct OdpowiedzGenerowania {
 
 async fn generuj_harmonogram(
     State(s): State<StanApi>,
-    Path(id): Path<i64>,
-    Query(p): Query<ParametrDzis>,
+    Sciezka(id): Sciezka<i64>,
+    Parametry(p): Parametry<ParametrDzis>,
 ) -> Wynik<Json<OdpowiedzGenerowania>> {
-    let wynik = t::generuj(&s.pula, id).await?;
+    let wynik = t::generuj(&s.pula, id).await;
+    zdarzenie(&s, "zlecenia", id, Operacja::Zmiana);
+    let wynik = wynik?;
     zmienione_zadania(&s, Some(id));
     zdarzenie(&s, "zamowienia_materialow", 0, Operacja::Zmiana);
     let f = t::FiltrZadan {
@@ -238,9 +332,12 @@ async fn generuj_harmonogram(
     }))
 }
 
-async fn przelicz_wszystko(State(s): State<StanApi>) -> Wynik<Json<serde_json::Value>> {
-    let ids = przelicz_wszystko_i_powiadom(&s).await?;
-    Ok(Json(serde_json::json!({ "przeliczone_zlecenia": ids })))
+async fn przelicz_wszystko(
+    State(s): State<StanApi>,
+) -> Wynik<Json<t::WynikPrzeliczeniaWszystkich>> {
+    let p = t::przelicz_wszystkie(&s.pula).await?;
+    powiadom_o_przeliczeniu(&s, &p);
+    Ok(Json(p))
 }
 
 // --- Dostawcy, widełki, czasy dostaw ---------------------------------------
@@ -251,7 +348,7 @@ async fn lista_dostawcow(State(s): State<StanApi>) -> Wynik<Json<Vec<t::Dostawca
 
 async fn dodaj_dostawce(
     State(s): State<StanApi>,
-    Json(d): Json<t::DaneDostawcy>,
+    Cialo(d): Cialo<t::DaneDostawcy>,
 ) -> Wynik<(StatusCode, Json<t::Dostawca>)> {
     let x = t::zapisz_dostawce(&s.pula, None, d).await?;
     zdarzenie(&s, "dostawcy", x.id, Operacja::Dodanie);
@@ -260,8 +357,8 @@ async fn dodaj_dostawce(
 
 async fn zmien_dostawce(
     State(s): State<StanApi>,
-    Path(id): Path<i64>,
-    Json(d): Json<t::DaneDostawcy>,
+    Sciezka(id): Sciezka<i64>,
+    Cialo(d): Cialo<t::DaneDostawcy>,
 ) -> Wynik<Json<t::Dostawca>> {
     let x = t::zapisz_dostawce(&s.pula, Some(id), d).await?;
     zdarzenie(&s, "dostawcy", id, Operacja::Zmiana);
@@ -270,12 +367,12 @@ async fn zmien_dostawce(
 
 async fn zmien_widelki(
     State(s): State<StanApi>,
-    Path(id): Path<i64>,
-    Json(w): Json<t::WidelkiKategorii>,
+    Sciezka(id): Sciezka<i64>,
+    Cialo(w): Cialo<t::WidelkiKategorii>,
 ) -> Wynik<StatusCode> {
-    t::zmien_widelki_kategorii(&s.pula, id, w).await?;
+    let p = t::zmien_widelki_kategorii(&s.pula, id, w).await?;
     zdarzenie(&s, "kategorie_materialow", id, Operacja::Zmiana);
-    przelicz_wszystko_i_powiadom(&s).await?;
+    powiadom_o_przeliczeniu(&s, &p);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -283,31 +380,49 @@ async fn lista_czasow(State(s): State<StanApi>) -> Wynik<Json<Vec<t::CzasDostawy
     Ok(Json(t::czasy_dostaw(&s.pula).await?))
 }
 
+/// Odpowiedź z wynikiem przeliczenia wszystkich zleceń dołączonym do zapisanego rekordu.
+#[derive(Serialize)]
+struct ZPrzeliczeniem<T: Serialize> {
+    #[serde(flatten)]
+    rekord: T,
+    #[serde(flatten)]
+    przeliczenie: t::WynikPrzeliczeniaWszystkich,
+}
+
 async fn dodaj_czas(
     State(s): State<StanApi>,
-    Json(d): Json<t::DaneCzasuDostawy>,
-) -> Wynik<(StatusCode, Json<t::CzasDostawy>)> {
-    let c = t::zapisz_czas_dostawy(&s.pula, None, d).await?;
+    Cialo(d): Cialo<t::DaneCzasuDostawy>,
+) -> Wynik<(StatusCode, Json<ZPrzeliczeniem<t::CzasDostawy>>)> {
+    let (c, p) = t::zapisz_czas_dostawy(&s.pula, None, d).await?;
     zdarzenie(&s, "czasy_dostaw", c.id, Operacja::Dodanie);
-    przelicz_wszystko_i_powiadom(&s).await?;
-    Ok((StatusCode::CREATED, Json(c)))
+    powiadom_o_przeliczeniu(&s, &p);
+    Ok((
+        StatusCode::CREATED,
+        Json(ZPrzeliczeniem {
+            rekord: c,
+            przeliczenie: p,
+        }),
+    ))
 }
 
 async fn zmien_czas(
     State(s): State<StanApi>,
-    Path(id): Path<i64>,
-    Json(d): Json<t::DaneCzasuDostawy>,
-) -> Wynik<Json<t::CzasDostawy>> {
-    let c = t::zapisz_czas_dostawy(&s.pula, Some(id), d).await?;
+    Sciezka(id): Sciezka<i64>,
+    Cialo(d): Cialo<t::DaneCzasuDostawy>,
+) -> Wynik<Json<ZPrzeliczeniem<t::CzasDostawy>>> {
+    let (c, p) = t::zapisz_czas_dostawy(&s.pula, Some(id), d).await?;
     zdarzenie(&s, "czasy_dostaw", id, Operacja::Zmiana);
-    przelicz_wszystko_i_powiadom(&s).await?;
-    Ok(Json(c))
+    powiadom_o_przeliczeniu(&s, &p);
+    Ok(Json(ZPrzeliczeniem {
+        rekord: c,
+        przeliczenie: p,
+    }))
 }
 
-async fn usun_czas(State(s): State<StanApi>, Path(id): Path<i64>) -> Wynik<StatusCode> {
-    t::usun_czas_dostawy(&s.pula, id).await?;
+async fn usun_czas(State(s): State<StanApi>, Sciezka(id): Sciezka<i64>) -> Wynik<StatusCode> {
+    let p = t::usun_czas_dostawy(&s.pula, id).await?;
     zdarzenie(&s, "czasy_dostaw", id, Operacja::Usuniecie);
-    przelicz_wszystko_i_powiadom(&s).await?;
+    powiadom_o_przeliczeniu(&s, &p);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -315,7 +430,7 @@ async fn usun_czas(State(s): State<StanApi>, Path(id): Path<i64>) -> Wynik<Statu
 
 async fn lista_zadan(
     State(s): State<StanApi>,
-    Query(f): Query<t::FiltrZadan>,
+    Parametry(f): Parametry<t::FiltrZadan>,
 ) -> Wynik<Json<Vec<ZadanieKalendarza>>> {
     let dzis = f.dzis.unwrap_or_else(dzis_serwera);
     Ok(Json(t::zadania(&s.pula, &f, dzis).await?))
@@ -323,8 +438,8 @@ async fn lista_zadan(
 
 async fn pobierz_zadanie(
     State(s): State<StanApi>,
-    Path(id): Path<i64>,
-    Query(p): Query<ParametrDzis>,
+    Sciezka(id): Sciezka<i64>,
+    Parametry(p): Parametry<ParametrDzis>,
 ) -> Wynik<Json<ZadanieKalendarza>> {
     Ok(Json(
         t::zadanie(&s.pula, id, p.dzis.unwrap_or_else(dzis_serwera)).await?,
@@ -333,7 +448,7 @@ async fn pobierz_zadanie(
 
 async fn dodaj_zadanie(
     State(s): State<StanApi>,
-    Json(d): Json<t::DaneZadaniaRecznego>,
+    Cialo(d): Cialo<t::DaneZadaniaRecznego>,
 ) -> Wynik<(StatusCode, Json<ZadanieKalendarza>)> {
     let zl = d.zlecenie_id;
     let id = t::zapisz_zadanie_reczne(&s.pula, None, d).await?;
@@ -346,8 +461,8 @@ async fn dodaj_zadanie(
 
 async fn zmien_zadanie(
     State(s): State<StanApi>,
-    Path(id): Path<i64>,
-    Json(d): Json<t::DaneZadaniaRecznego>,
+    Sciezka(id): Sciezka<i64>,
+    Cialo(d): Cialo<t::DaneZadaniaRecznego>,
 ) -> Wynik<Json<ZadanieKalendarza>> {
     let zl = d.zlecenie_id;
     t::zapisz_zadanie_reczne(&s.pula, Some(id), d).await?;
@@ -355,7 +470,7 @@ async fn zmien_zadanie(
     Ok(Json(t::zadanie(&s.pula, id, dzis_serwera()).await?))
 }
 
-async fn usun_zadanie(State(s): State<StanApi>, Path(id): Path<i64>) -> Wynik<StatusCode> {
+async fn usun_zadanie(State(s): State<StanApi>, Sciezka(id): Sciezka<i64>) -> Wynik<StatusCode> {
     let zl = t::usun_zadanie_reczne(&s.pula, id).await?;
     zmienione_zadania(&s, zl);
     Ok(StatusCode::NO_CONTENT)
@@ -363,21 +478,23 @@ async fn usun_zadanie(State(s): State<StanApi>, Path(id): Path<i64>) -> Wynik<St
 
 async fn wykonaj_zadanie(
     State(s): State<StanApi>,
-    Path(id): Path<i64>,
-    Query(p): Query<ParametrDzis>,
-    Json(w): Json<t::Wykonanie>,
+    Sciezka(id): Sciezka<i64>,
+    Parametry(p): Parametry<ParametrDzis>,
+    Cialo(w): Cialo<t::Wykonanie>,
 ) -> Wynik<Json<ZadanieKalendarza>> {
-    let zl = t::wykonaj(&s.pula, id, w).await?;
+    let dzis = p.dzis.unwrap_or_else(dzis_serwera);
+    let zl = t::wykonaj(&s.pula, id, w, dzis).await?;
     zmienione_zadania(&s, zl);
+    if let Some(zl) = zl {
+        zdarzenie(&s, "zlecenia", zl, Operacja::Zmiana);
+    }
     zdarzenie(&s, "zamowienia_materialow", 0, Operacja::Zmiana);
-    Ok(Json(
-        t::zadanie(&s.pula, id, p.dzis.unwrap_or_else(dzis_serwera)).await?,
-    ))
+    Ok(Json(t::zadanie(&s.pula, id, dzis).await?))
 }
 
 async fn tydzien(
     State(s): State<StanApi>,
-    Query(p): Query<ParametrDzis>,
+    Parametry(p): Parametry<ParametrDzis>,
 ) -> Wynik<Json<t::Tydzien>> {
     Ok(Json(
         t::tydzien(&s.pula, p.dzis.unwrap_or_else(dzis_serwera)).await?,
@@ -386,7 +503,7 @@ async fn tydzien(
 
 async fn do_zamowienia(
     State(s): State<StanApi>,
-    Query(p): Query<ParametrDzis>,
+    Parametry(p): Parametry<ParametrDzis>,
 ) -> Wynik<Json<t::DoZamowienia>> {
     Ok(Json(
         t::do_zamowienia(&s.pula, p.dzis.unwrap_or_else(dzis_serwera), p.horyzont).await?,
@@ -395,7 +512,7 @@ async fn do_zamowienia(
 
 async fn kolizje(
     State(s): State<StanApi>,
-    Query(p): Query<ParametrDzis>,
+    Parametry(p): Parametry<ParametrDzis>,
 ) -> Wynik<Json<Vec<t::KolizjaZlecen>>> {
     Ok(Json(t::kolizje(&s.pula, p.od, p.do_).await?))
 }
@@ -410,29 +527,22 @@ async fn pobierz_ustawienia(State(s): State<StanApi>) -> Wynik<Json<UstawieniaTe
     Ok(Json(t::ustawienia(&mut *s.pula.acquire().await?).await?))
 }
 
-#[derive(Serialize)]
-struct UstawieniaIPrzeliczenie {
-    #[serde(flatten)]
-    ustawienia: UstawieniaTerminow,
-    przeliczone_zlecenia: Vec<i64>,
-}
-
 async fn zmien_ustawienia(
     State(s): State<StanApi>,
-    Json(z): Json<t::ZmianaUstawien>,
-) -> Wynik<Json<UstawieniaIPrzeliczenie>> {
-    let u = t::zmien_ustawienia(&s.pula, z).await?;
+    Cialo(z): Cialo<t::ZmianaUstawien>,
+) -> Wynik<Json<ZPrzeliczeniem<UstawieniaTerminow>>> {
+    let (u, p) = t::zmien_ustawienia(&s.pula, z).await?;
     zdarzenie(&s, "ustawienia", 0, Operacja::Zmiana);
-    let ids = przelicz_wszystko_i_powiadom(&s).await?;
-    Ok(Json(UstawieniaIPrzeliczenie {
-        ustawienia: u,
-        przeliczone_zlecenia: ids,
+    powiadom_o_przeliczeniu(&s, &p);
+    Ok(Json(ZPrzeliczeniem {
+        rekord: u,
+        przeliczenie: p,
     }))
 }
 
 async fn lista_dni_wolnych(
     State(s): State<StanApi>,
-    Query(p): Query<ParametrDzis>,
+    Parametry(p): Parametry<ParametrDzis>,
 ) -> Wynik<Json<Vec<t::DzienWolny>>> {
     Ok(Json(
         t::dni_wolne(&mut *s.pula.acquire().await?, p.od, p.do_).await?,
@@ -441,25 +551,38 @@ async fn lista_dni_wolnych(
 
 async fn ustaw_dzien_wolny(
     State(s): State<StanApi>,
-    Path(data): Path<String>,
-    Json(d): Json<t::DaneDniaWolnego>,
-) -> Wynik<Json<t::DzienWolny>> {
-    let w = t::ustaw_dzien_wolny(&s.pula, &data, d).await?;
+    Sciezka(data): Sciezka<String>,
+    Cialo(d): Cialo<t::DaneDniaWolnego>,
+) -> Wynik<Json<ZPrzeliczeniem<t::DzienWolny>>> {
+    let (w, p) = t::ustaw_dzien_wolny(&s.pula, &data, d).await?;
     zdarzenie(&s, "dni_wolne", 0, Operacja::Zmiana);
-    przelicz_wszystko_i_powiadom(&s).await?;
-    Ok(Json(w))
+    powiadom_o_przeliczeniu(&s, &p);
+    Ok(Json(ZPrzeliczeniem {
+        rekord: w,
+        przeliczenie: p,
+    }))
 }
 
-async fn usun_dzien_wolny(State(s): State<StanApi>, Path(data): Path<String>) -> Wynik<StatusCode> {
-    t::usun_dzien_wolny(&s.pula, &data).await?;
+async fn usun_dzien_wolny(
+    State(s): State<StanApi>,
+    Sciezka(data): Sciezka<String>,
+) -> Wynik<StatusCode> {
+    let p = t::usun_dzien_wolny(&s.pula, &data).await?;
     zdarzenie(&s, "dni_wolne", 0, Operacja::Usuniecie);
-    przelicz_wszystko_i_powiadom(&s).await?;
+    powiadom_o_przeliczeniu(&s, &p);
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn swieta(Query(p): Query<ParametrDzis>) -> Json<Vec<Swieto>> {
+async fn swieta(Parametry(p): Parametry<ParametrDzis>) -> Wynik<Json<Vec<Swieto>>> {
     let rok = p
         .rok
         .unwrap_or_else(|| chrono::Datelike::year(&dzis_serwera()));
-    Json(kalendarz::swieta(rok))
+    if !kalendarz::obslugiwany_rok(rok) {
+        return Err(BladApi::NieprawidloweDane(format!(
+            "rok {rok} spoza obsługiwanego zakresu {}–{}",
+            kalendarz::ROK_MIN,
+            kalendarz::ROK_MAX
+        )));
+    }
+    Ok(Json(kalendarz::swieta(rok)))
 }

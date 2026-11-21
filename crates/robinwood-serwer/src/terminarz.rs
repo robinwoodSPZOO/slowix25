@@ -2,7 +2,7 @@
 //! dostawcy, czasy dostaw, ustawienia odstępów i dni wolne. Logika liczenia jest w
 //! [`crate::kalendarz`]; tu tylko wczytanie danych, zapis wyniku i odczyt ze stanami.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use chrono::{Datelike, Duration, NaiveDate};
 use serde::{Deserialize, Serialize};
@@ -28,13 +28,59 @@ pub const ETAPY_ZLECENIA: &[&str] = &[
     "gwarancja",
     "zakonczone",
 ];
+/// Etapy po montażu: zlecenia w tych etapach nie są przeliczane automatycznie (zmiana
+/// ustawień, dni wolnych, widełek ani zmiana samego zlecenia nie przepisuje ich dat).
+pub const ETAPY_PO_MONTAZU: &[&str] = &["odbior", "gwarancja", "zakonczone"];
+const SQL_ETAP_PRZELICZANY: &str = "z.etap NOT IN ('odbior', 'gwarancja', 'zakonczone')";
 pub const RODZAJE_DNI_WOLNYCH: &[&str] = &["swieto", "urlop", "przerwa_dostawcow", "inne"];
 const MAX_DNI: i64 = 365;
 
+/// Data `RRRR-MM-DD` z obsługiwanego zakresu lat (patrz [`kalendarz::ROK_MIN`]).
+fn parsuj_date(t: &str) -> Result<NaiveDate, String> {
+    let d = NaiveDate::parse_from_str(t.trim(), "%Y-%m-%d")
+        .map_err(|_| format!("nieprawidłowa data „{t}” (oczekiwano RRRR-MM-DD)"))?;
+    if !kalendarz::obslugiwany_rok(d.year()) {
+        return Err(format!(
+            "data {t} spoza obsługiwanego zakresu lat {}–{}",
+            kalendarz::ROK_MIN,
+            kalendarz::ROK_MAX
+        ));
+    }
+    Ok(d)
+}
+
 fn data(t: &str) -> Wynik<NaiveDate> {
-    NaiveDate::parse_from_str(t, "%Y-%m-%d").map_err(|_| {
-        BladApi::NieprawidloweDane(format!("nieprawidłowa data „{t}” (oczekiwano RRRR-MM-DD)"))
-    })
+    parsuj_date(t).map_err(BladApi::NieprawidloweDane)
+}
+
+/// Deserializacja pól wejściowych: daty z kontrolą zakresu lat i pola trójstanowe
+/// (`Option<Option<T>>`: pole pominięte = `None` → bez zmian, `null` = `Some(None)` → wyczyść).
+pub mod wej {
+    use chrono::NaiveDate;
+    use serde::{Deserialize, Deserializer};
+
+    pub fn data<'de, D: Deserializer<'de>>(d: D) -> Result<NaiveDate, D::Error> {
+        let t = String::deserialize(d)?;
+        super::parsuj_date(&t).map_err(serde::de::Error::custom)
+    }
+
+    pub fn data_opt<'de, D: Deserializer<'de>>(d: D) -> Result<Option<NaiveDate>, D::Error> {
+        Option::<String>::deserialize(d)?
+            .map(|t| super::parsuj_date(&t).map_err(serde::de::Error::custom))
+            .transpose()
+    }
+
+    pub fn data_tri<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<Option<Option<NaiveDate>>, D::Error> {
+        data_opt(d).map(Some)
+    }
+
+    pub fn tri<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+        d: D,
+    ) -> Result<Option<Option<T>>, D::Error> {
+        Option::<T>::deserialize(d).map(Some)
+    }
 }
 
 fn data_opt(t: Option<&str>) -> Wynik<Option<NaiveDate>> {
@@ -68,12 +114,25 @@ async fn istnieje(conn: &mut SqliteConnection, sql: &str, id: i64, co: &str) -> 
 }
 
 async fn dziennik(conn: &mut SqliteConnection, tabela: &str, id: i64, operacja: &str) -> Wynik<()> {
-    sqlx::query("INSERT INTO dziennik_zmian (tabela, rekord_id, operacja) VALUES (?1, ?2, ?3)")
-        .bind(tabela)
-        .bind(id)
-        .bind(operacja)
-        .execute(&mut *conn)
-        .await?;
+    dziennik_opis(conn, tabela, id, operacja, None).await
+}
+
+async fn dziennik_opis(
+    conn: &mut SqliteConnection,
+    tabela: &str,
+    id: i64,
+    operacja: &str,
+    opis: Option<&str>,
+) -> Wynik<()> {
+    sqlx::query(
+        "INSERT INTO dziennik_zmian (tabela, rekord_id, operacja, opis) VALUES (?1, ?2, ?3, ?4)",
+    )
+    .bind(tabela)
+    .bind(id)
+    .bind(operacja)
+    .bind(opis)
+    .execute(&mut *conn)
+    .await?;
     Ok(())
 }
 
@@ -147,7 +206,11 @@ pub struct ZmianaUstawien {
     pub odstep_pomieszczenie_gotowe_dni: Option<i64>,
 }
 
-pub async fn zmien_ustawienia(pula: &SqlitePool, z: ZmianaUstawien) -> Wynik<UstawieniaTerminow> {
+/// Zmienia ustawienia i w tej samej transakcji przelicza wszystkie zlecenia z harmonogramem.
+pub async fn zmien_ustawienia(
+    pula: &SqlitePool,
+    z: ZmianaUstawien,
+) -> Wynik<(UstawieniaTerminow, WynikPrzeliczeniaWszystkich)> {
     let wartosci = [
         z.odstep_materialy_dni,
         z.odstep_rysunki_dni,
@@ -180,9 +243,11 @@ pub async fn zmien_ustawienia(pula: &SqlitePool, z: ZmianaUstawien) -> Wynik<Ust
         .execute(&mut *tx)
         .await?;
     }
+    dziennik(&mut tx, "ustawienia", 0, "zmiana").await?;
     let u = ustawienia(&mut tx).await?;
+    let p = przelicz_wszystkie_w(&mut tx).await?;
     tx.commit().await?;
-    Ok(u)
+    Ok((u, p))
 }
 
 // ===========================================================================
@@ -197,7 +262,7 @@ pub struct DzienWolny {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DaneDniaWolnego {
     pub rodzaj: Option<String>,
     pub opis: Option<String>,
@@ -221,7 +286,7 @@ pub async fn ustaw_dzien_wolny(
     pula: &SqlitePool,
     d: &str,
     dane: DaneDniaWolnego,
-) -> Wynik<DzienWolny> {
+) -> Wynik<(DzienWolny, WynikPrzeliczeniaWszystkich)> {
     let d = tekst(data(d)?);
     let rodzaj = dane.rodzaj.unwrap_or_else(|| "inne".into());
     if !RODZAJE_DNI_WOLNYCH.contains(&rodzaj.as_str()) {
@@ -234,6 +299,7 @@ pub async fn ustaw_dzien_wolny(
         .opis
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
+    let mut tx = pula.begin().await?;
     sqlx::query(
         "INSERT INTO dni_wolne (data, rodzaj, opis) VALUES (?1, ?2, ?3) \
          ON CONFLICT(data) DO UPDATE SET rodzaj = excluded.rodzaj, opis = excluded.opis",
@@ -241,26 +307,36 @@ pub async fn ustaw_dzien_wolny(
     .bind(&d)
     .bind(&rodzaj)
     .bind(&opis)
-    .execute(pula)
+    .execute(&mut *tx)
     .await?;
-    Ok(DzienWolny {
-        data: d,
-        rodzaj,
-        opis,
-    })
+    dziennik_opis(&mut tx, "dni_wolne", 0, "zmiana", Some(&d)).await?;
+    let p = przelicz_wszystkie_w(&mut tx).await?;
+    tx.commit().await?;
+    Ok((
+        DzienWolny {
+            data: d,
+            rodzaj,
+            opis,
+        },
+        p,
+    ))
 }
 
-pub async fn usun_dzien_wolny(pula: &SqlitePool, d: &str) -> Wynik<()> {
+pub async fn usun_dzien_wolny(pula: &SqlitePool, d: &str) -> Wynik<WynikPrzeliczeniaWszystkich> {
     let d = tekst(data(d)?);
+    let mut tx = pula.begin().await?;
     let n = sqlx::query("DELETE FROM dni_wolne WHERE data = ?1")
         .bind(&d)
-        .execute(pula)
+        .execute(&mut *tx)
         .await?
         .rows_affected();
     if n == 0 {
         return Err(BladApi::NieZnaleziono(format!("dzień wolny {d}")));
     }
-    Ok(())
+    dziennik_opis(&mut tx, "dni_wolne", 0, "usuniecie", Some(&d)).await?;
+    let p = przelicz_wszystkie_w(&mut tx).await?;
+    tx.commit().await?;
+    Ok(p)
 }
 
 /// Kalendarz dni roboczych z ustawień i dni wolnych użytkownika.
@@ -291,6 +367,7 @@ pub struct Dostawca {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DaneDostawcy {
     pub nazwa: String,
     #[serde(default)]
@@ -375,6 +452,7 @@ pub async fn zapisz_dostawce(
 
 /// Zmiana domyślnych widełek kategorii (0–0 = „brak widełek”) i domyślnego dostawcy.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WidelkiKategorii {
     pub dni_dostawy_min: i64,
     pub dni_dostawy_max: i64,
@@ -382,9 +460,13 @@ pub struct WidelkiKategorii {
     pub domyslny_dostawca_id: Option<i64>,
 }
 
-pub async fn zmien_widelki_kategorii(pula: &SqlitePool, id: i64, w: WidelkiKategorii) -> Wynik<()> {
+pub async fn zmien_widelki_kategorii(
+    pula: &SqlitePool,
+    id: i64,
+    w: WidelkiKategorii,
+) -> Wynik<WynikPrzeliczeniaWszystkich> {
     sprawdz_widelki(w.dni_dostawy_min, w.dni_dostawy_max)?;
-    let mut conn = pula.acquire().await?;
+    let mut conn = pula.begin().await?;
     if let Some(d) = w.domyslny_dostawca_id {
         istnieje(
             &mut conn,
@@ -407,7 +489,10 @@ pub async fn zmien_widelki_kategorii(pula: &SqlitePool, id: i64, w: WidelkiKateg
     if n == 0 {
         return Err(BladApi::NieZnaleziono(format!("kategoria materiału {id}")));
     }
-    dziennik(&mut conn, "kategorie_materialow", id, "zmiana").await
+    dziennik(&mut conn, "kategorie_materialow", id, "zmiana").await?;
+    let p = przelicz_wszystkie_w(&mut conn).await?;
+    conn.commit().await?;
+    Ok(p)
 }
 
 fn sprawdz_widelki(min: i64, max: i64) -> Wynik<()> {
@@ -434,6 +519,7 @@ pub struct CzasDostawy {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DaneCzasuDostawy {
     pub kategoria_id: i64,
     pub dostawca_id: i64,
@@ -453,10 +539,10 @@ pub async fn czasy_dostaw(pula: &SqlitePool) -> Wynik<Vec<CzasDostawy>> {
     )
 }
 
-async fn czas_dostawy(pula: &SqlitePool, id: i64) -> Wynik<CzasDostawy> {
+async fn czas_dostawy(conn: &mut SqliteConnection, id: i64) -> Wynik<CzasDostawy> {
     sqlx::query_as(&format!("{SQL_CZASY} WHERE c.id = ?1"))
         .bind(id)
-        .fetch_optional(pula)
+        .fetch_optional(&mut *conn)
         .await?
         .ok_or_else(|| BladApi::NieZnaleziono(format!("czas dostawy {id}")))
 }
@@ -465,9 +551,9 @@ pub async fn zapisz_czas_dostawy(
     pula: &SqlitePool,
     id: Option<i64>,
     d: DaneCzasuDostawy,
-) -> Wynik<CzasDostawy> {
+) -> Wynik<(CzasDostawy, WynikPrzeliczeniaWszystkich)> {
     sprawdz_widelki(d.dni_min, d.dni_max)?;
-    let mut conn = pula.acquire().await?;
+    let mut conn = pula.begin().await?;
     istnieje(
         &mut conn,
         "SELECT id FROM kategorie_materialow WHERE id = ?1",
@@ -521,20 +607,26 @@ pub async fn zapisz_czas_dostawy(
         }
     };
     dziennik(&mut conn, "czasy_dostaw", id, "zmiana").await?;
-    drop(conn);
-    czas_dostawy(pula, id).await
+    let p = przelicz_wszystkie_w(&mut conn).await?;
+    let c = czas_dostawy(&mut conn, id).await?;
+    conn.commit().await?;
+    Ok((c, p))
 }
 
-pub async fn usun_czas_dostawy(pula: &SqlitePool, id: i64) -> Wynik<()> {
+pub async fn usun_czas_dostawy(pula: &SqlitePool, id: i64) -> Wynik<WynikPrzeliczeniaWszystkich> {
+    let mut tx = pula.begin().await?;
     let n = sqlx::query("DELETE FROM czasy_dostaw WHERE id = ?1")
         .bind(id)
-        .execute(pula)
+        .execute(&mut *tx)
         .await?
         .rows_affected();
     if n == 0 {
         return Err(BladApi::NieZnaleziono(format!("czas dostawy {id}")));
     }
-    Ok(())
+    dziennik(&mut tx, "czasy_dostaw", id, "usuniecie").await?;
+    let p = przelicz_wszystkie_w(&mut tx).await?;
+    tx.commit().await?;
+    Ok(p)
 }
 
 // ===========================================================================
@@ -555,9 +647,15 @@ pub struct Zlecenie {
     pub odstep_rysunki_dni: Option<i64>,
     pub odstep_pomiar_dni: Option<i64>,
     pub utworzono: String,
+    /// Ostatnie automatyczne przeliczenie się nie udało – zapisane zadania są nieaktualne.
+    pub harmonogram_nieaktualny: bool,
+    /// Powód (komunikat błędu przeliczenia), `null` gdy harmonogram aktualny.
+    pub harmonogram_nieaktualny_powod: Option<String>,
 }
 
+/// Dane zlecenia (POST i PUT – pełna zmiana; pola pominięte = brak wartości).
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DaneZlecenia {
     pub klient_id: i64,
     #[serde(default)]
@@ -565,7 +663,7 @@ pub struct DaneZlecenia {
     pub nazwa: String,
     #[serde(default)]
     pub etap: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "wej::data_opt")]
     pub montaz_od: Option<NaiveDate>,
     #[serde(default)]
     pub czas_warsztat_dni: Option<i64>,
@@ -581,7 +679,8 @@ pub struct DaneZlecenia {
 
 const KOLUMNY_ZLECENIA: &str =
     "id, klient_id, umowa_id, nazwa, etap, montaz_od, czas_warsztat_dni, czas_montazu_dni, \
-     odstep_materialy_dni, odstep_rysunki_dni, odstep_pomiar_dni, utworzono";
+     odstep_materialy_dni, odstep_rysunki_dni, odstep_pomiar_dni, utworzono, \
+     (harmonogram_nieaktualny_powod IS NOT NULL) AS harmonogram_nieaktualny, harmonogram_nieaktualny_powod";
 
 pub async fn zlecenia(pula: &SqlitePool) -> Wynik<Vec<Zlecenie>> {
     Ok(sqlx::query_as(&format!(
@@ -601,11 +700,13 @@ pub async fn zlecenie(conn: &mut SqliteConnection, id: i64) -> Wynik<Zlecenie> {
     .ok_or_else(|| BladApi::NieZnaleziono(format!("zlecenie {id}")))
 }
 
+/// Dodaje (`id = None`) albo zmienia zlecenie. Przy zmianie – w tej samej transakcji –
+/// przelicza istniejący harmonogram; zwraca też, czy go przeliczono.
 pub async fn zapisz_zlecenie(
     pula: &SqlitePool,
     id: Option<i64>,
     d: DaneZlecenia,
-) -> Wynik<Zlecenie> {
+) -> Wynik<(Zlecenie, bool)> {
     let nazwa = d.nazwa.trim().to_string();
     if nazwa.is_empty() {
         return Err(BladApi::NieprawidloweDane(
@@ -652,24 +753,27 @@ pub async fn zapisz_zlecenie(
         }
     }
     let montaz = d.montaz_od.map(tekst);
-    let id = match id {
-        None => sqlx::query(
-            "INSERT INTO zlecenia (klient_id, umowa_id, nazwa, etap, montaz_od, czas_warsztat_dni, czas_montazu_dni, \
-             odstep_materialy_dni, odstep_rysunki_dni, odstep_pomiar_dni) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        )
-        .bind(d.klient_id)
-        .bind(d.umowa_id)
-        .bind(&nazwa)
-        .bind(&etap)
-        .bind(&montaz)
-        .bind(d.czas_warsztat_dni)
-        .bind(d.czas_montazu_dni)
-        .bind(d.odstep_materialy_dni)
-        .bind(d.odstep_rysunki_dni)
-        .bind(d.odstep_pomiar_dni)
-        .execute(&mut *tx)
-        .await?
-        .last_insert_rowid(),
+    let (id, operacja) = match id {
+        None => (
+            sqlx::query(
+                "INSERT INTO zlecenia (klient_id, umowa_id, nazwa, etap, montaz_od, czas_warsztat_dni, czas_montazu_dni, \
+                 odstep_materialy_dni, odstep_rysunki_dni, odstep_pomiar_dni) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            )
+            .bind(d.klient_id)
+            .bind(d.umowa_id)
+            .bind(&nazwa)
+            .bind(&etap)
+            .bind(&montaz)
+            .bind(d.czas_warsztat_dni)
+            .bind(d.czas_montazu_dni)
+            .bind(d.odstep_materialy_dni)
+            .bind(d.odstep_rysunki_dni)
+            .bind(d.odstep_pomiar_dni)
+            .execute(&mut *tx)
+            .await?
+            .last_insert_rowid(),
+            "dodanie",
+        ),
         Some(id) => {
             let n = sqlx::query(
                 "UPDATE zlecenia SET klient_id = ?1, umowa_id = ?2, nazwa = ?3, etap = ?4, montaz_od = ?5, \
@@ -693,13 +797,17 @@ pub async fn zapisz_zlecenie(
             if n == 0 {
                 return Err(BladApi::NieZnaleziono(format!("zlecenie {id}")));
             }
-            id
+            (id, "zmiana")
         }
     };
-    dziennik(&mut tx, "zlecenia", id, "zmiana").await?;
+    dziennik(&mut tx, "zlecenia", id, operacja).await?;
+    let przeliczono = matches!(
+        przelicz_jesli_jest_w(&mut tx, id).await?,
+        Przeliczenie::Przeliczone(_)
+    );
     let z = zlecenie(&mut tx, id).await?;
     tx.commit().await?;
-    Ok(z)
+    Ok((z, przeliczono))
 }
 
 // ===========================================================================
@@ -730,17 +838,40 @@ pub struct Material {
     pub data_dostawy: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// Nowy materiał zlecenia (`POST /zlecenia/{id}/materialy`).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DaneMaterialu {
     pub kategoria_id: i64,
     #[serde(default)]
     pub dostawca_id: Option<i64>,
     #[serde(default)]
     pub opis: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "wej::data_opt")]
     pub data_zamowienia: Option<NaiveDate>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "wej::data_opt")]
     pub data_dostawy: Option<NaiveDate>,
+    /// Potwierdzenie zamówienia mimo wierszy specyfikacji „do potwierdzenia” (patrz 409).
+    #[serde(default)]
+    pub mimo_blokady: bool,
+}
+
+/// Częściowa zmiana materiału (`PUT /zamowienia-materialow/{id}`): pole pominięte – bez zmian,
+/// `null` – wyczyszczenie (dla `dostawca_id`, `opis`, `data_dostawy`). Daty zamówienia nie
+/// czyści się tutaj – służy do tego `POST /zamowienia-materialow/{id}/cofnij-zamowienie`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ZmianaMaterialu {
+    pub kategoria_id: Option<i64>,
+    #[serde(deserialize_with = "wej::tri")]
+    pub dostawca_id: Option<Option<i64>>,
+    #[serde(deserialize_with = "wej::tri")]
+    pub opis: Option<Option<String>>,
+    #[serde(deserialize_with = "wej::data_tri")]
+    pub data_zamowienia: Option<Option<NaiveDate>>,
+    #[serde(deserialize_with = "wej::data_tri")]
+    pub data_dostawy: Option<Option<NaiveDate>>,
+    pub mimo_blokady: bool,
 }
 
 const SQL_MATERIALY: &str = "SELECT m.id, m.zlecenie_id, m.kategoria_id, k.nazwa AS kategoria_nazwa, m.dostawca_id, \
@@ -781,15 +912,55 @@ fn status_materialu(zam: Option<NaiveDate>, dost: Option<NaiveDate>) -> Wynik<&'
     }
 }
 
-/// Dodaje (`id = None`) lub zmienia materiał zlecenia. Zwraca materiał i id zlecenia.
-pub async fn zapisz_material(
+fn opis_tekst(t: Option<String>) -> Option<String> {
+    t.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// Miękka blokada „do potwierdzenia”: zamówienie materiału, na którego kategorię czekają
+/// wiersze specyfikacji umowy zlecenia, wymaga `mimo_blokady: true` (inaczej 409 z listą wierszy).
+/// Zwraca opis do dziennika, gdy zamówiono mimo blokady.
+async fn sprawdz_blokade(
+    conn: &mut SqliteConnection,
+    zlecenie_id: i64,
+    kategoria_id: i64,
+    mimo_blokady: bool,
+) -> Wynik<Option<String>> {
+    let wiersze = blokady(conn, Some(zlecenie_id))
+        .await?
+        .remove(&(zlecenie_id, kategoria_id))
+        .unwrap_or_default();
+    if wiersze.is_empty() {
+        return Ok(None);
+    }
+    let lista = wiersze
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if !mimo_blokady {
+        return Err(BladApi::Zablokowane {
+            komunikat: format!(
+                "Zamówienie wstrzymane: {} poz. specyfikacji czeka na potwierdzenie klienta (wiersze: {lista}). \
+                 Potwierdź wiersze albo wyślij ponownie z \"mimo_blokady\": true",
+                wiersze.len()
+            ),
+            wiersze_do_potwierdzenia: wiersze,
+        });
+    }
+    Ok(Some(format!(
+        "zamówiono mimo blokady – wiersze specyfikacji do potwierdzenia: {lista}"
+    )))
+}
+
+/// Dodaje materiał do zlecenia (w tej samej transakcji przelicza istniejący harmonogram).
+pub async fn dodaj_material(
     pula: &SqlitePool,
-    zlecenie_id: Option<i64>,
-    id: Option<i64>,
+    zlecenie_id: i64,
     d: DaneMaterialu,
 ) -> Wynik<Material> {
     let status = status_materialu(d.data_zamowienia, d.data_dostawy)?;
     let mut tx = pula.begin().await?;
+    zlecenie(&mut tx, zlecenie_id).await?;
     istnieje(
         &mut tx,
         "SELECT id FROM kategorie_materialow WHERE id = ?1",
@@ -806,76 +977,233 @@ pub async fn zapisz_material(
         )
         .await?;
     }
-    let opis = d
-        .opis
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    let (zam, dost) = (d.data_zamowienia.map(tekst), d.data_dostawy.map(tekst));
-    let id = match (id, zlecenie_id) {
-        (None, Some(zl)) => {
-            zlecenie(&mut tx, zl).await?;
-            sqlx::query(
-                "INSERT INTO zamowienia_materialow (zlecenie_id, kategoria_id, dostawca_id, opis, status, data_zamowienia, data_dostawy) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            )
-            .bind(zl)
-            .bind(d.kategoria_id)
-            .bind(d.dostawca_id)
-            .bind(&opis)
-            .bind(status)
-            .bind(&zam)
-            .bind(&dost)
-            .execute(&mut *tx)
-            .await?
-            .last_insert_rowid()
-        }
-        (Some(id), _) => {
-            let n = sqlx::query(
-                "UPDATE zamowienia_materialow SET kategoria_id = ?1, dostawca_id = ?2, opis = ?3, status = ?4, \
-                 data_zamowienia = ?5, data_dostawy = ?6 WHERE id = ?7",
-            )
-            .bind(d.kategoria_id)
-            .bind(d.dostawca_id)
-            .bind(&opis)
-            .bind(status)
-            .bind(&zam)
-            .bind(&dost)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
-            if n == 0 {
-                return Err(BladApi::NieZnaleziono(format!(
-                    "materiał (zamówienie) {id}"
-                )));
-            }
-            // zadanie „zamówić” ma ten sam stan wykonania co materiał
-            sqlx::query("UPDATE zadania_kalendarza SET wykonano = ?1 WHERE zamowienie_id = ?2 AND klucz LIKE 'zamowienie:%'")
-                .bind(&zam)
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
-            id
-        }
-        (None, None) => return Err(BladApi::NieprawidloweDane("brak zlecenia".into())),
+    let opis_blokady = match d.data_zamowienia {
+        Some(_) => sprawdz_blokade(&mut tx, zlecenie_id, d.kategoria_id, d.mimo_blokady).await?,
+        None => None,
     };
-    dziennik(&mut tx, "zamowienia_materialow", id, "zmiana").await?;
+    let id = sqlx::query(
+        "INSERT INTO zamowienia_materialow (zlecenie_id, kategoria_id, dostawca_id, opis, status, data_zamowienia, data_dostawy) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    )
+    .bind(zlecenie_id)
+    .bind(d.kategoria_id)
+    .bind(d.dostawca_id)
+    .bind(opis_tekst(d.opis))
+    .bind(status)
+    .bind(d.data_zamowienia.map(tekst))
+    .bind(d.data_dostawy.map(tekst))
+    .execute(&mut *tx)
+    .await?
+    .last_insert_rowid();
+    dziennik_opis(
+        &mut tx,
+        "zamowienia_materialow",
+        id,
+        "dodanie",
+        opis_blokady.as_deref(),
+    )
+    .await?;
     if d.data_dostawy.is_some() {
         aktualizuj_srednia_rzeczywista(&mut tx, id).await?;
     }
+    przelicz_jesli_jest_w(&mut tx, zlecenie_id).await?;
     let m = material(&mut tx, id).await?;
     tx.commit().await?;
     Ok(m)
 }
 
+/// Częściowa zmiana materiału. Pola pominięte zostają bez zmian – w szczególności daty
+/// zamówienia i dostawy oraz stan wykonania zadania „zamówić”.
+pub async fn zmien_material(pula: &SqlitePool, id: i64, z: ZmianaMaterialu) -> Wynik<Material> {
+    let mut tx = pula.begin().await?;
+    let m = material(&mut tx, id).await?;
+    let kategoria = z.kategoria_id.unwrap_or(m.kategoria_id);
+    istnieje(
+        &mut tx,
+        "SELECT id FROM kategorie_materialow WHERE id = ?1",
+        kategoria,
+        "kategoria materiału",
+    )
+    .await?;
+    let dostawca = z.dostawca_id.unwrap_or(m.dostawca_id);
+    if let Some(dost) = dostawca {
+        istnieje(
+            &mut tx,
+            "SELECT id FROM dostawcy WHERE id = ?1",
+            dost,
+            "dostawca",
+        )
+        .await?;
+    }
+    let opis = match z.opis {
+        None => m.opis.clone(),
+        Some(o) => opis_tekst(o),
+    };
+    let zam_bylo = data_opt(m.data_zamowienia.as_deref())?;
+    let dost_bylo = data_opt(m.data_dostawy.as_deref())?;
+    let zam = match z.data_zamowienia {
+        None => zam_bylo,
+        Some(None) if zam_bylo.is_some() => {
+            return Err(BladApi::NieprawidloweDane(format!(
+                "materiał {id} jest zamówiony – aby cofnąć zamówienie użyj POST /zamowienia-materialow/{id}/cofnij-zamowienie"
+            )))
+        }
+        Some(nowa) => nowa,
+    };
+    let dost = z.data_dostawy.unwrap_or(dost_bylo);
+    let status = status_materialu(zam, dost)?;
+    let opis_blokady = if zam_bylo.is_none() && zam.is_some() {
+        sprawdz_blokade(&mut tx, m.zlecenie_id, kategoria, z.mimo_blokady).await?
+    } else {
+        None
+    };
+    sqlx::query(
+        "UPDATE zamowienia_materialow SET kategoria_id = ?1, dostawca_id = ?2, opis = ?3, status = ?4, \
+         data_zamowienia = ?5, data_dostawy = ?6 WHERE id = ?7",
+    )
+    .bind(kategoria)
+    .bind(dostawca)
+    .bind(&opis)
+    .bind(status)
+    .bind(zam.map(tekst))
+    .bind(dost.map(tekst))
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    if zam != zam_bylo {
+        // zadanie „zamówić” ma ten sam stan wykonania co materiał (tylko przy jawnej zmianie daty)
+        sqlx::query("UPDATE zadania_kalendarza SET wykonano = ?1 WHERE zamowienie_id = ?2 AND klucz LIKE 'zamowienie:%'")
+            .bind(zam.map(tekst))
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    dziennik_opis(
+        &mut tx,
+        "zamowienia_materialow",
+        id,
+        "zmiana",
+        opis_blokady.as_deref(),
+    )
+    .await?;
+    if dost != dost_bylo {
+        aktualizuj_srednia_rzeczywista(&mut tx, id).await?;
+    }
+    przelicz_jesli_jest_w(&mut tx, m.zlecenie_id).await?;
+    let m = material(&mut tx, id).await?;
+    tx.commit().await?;
+    Ok(m)
+}
+
+/// Jawne cofnięcie zamówienia materiału: czyści daty zamówienia i dostawy, przywraca status
+/// `do_zamowienia` i zadanie „zamówić” jako niewykonane, przelicza zlecenie.
+pub async fn cofnij_zamowienie(pula: &SqlitePool, id: i64) -> Wynik<Material> {
+    let mut tx = pula.begin().await?;
+    let m = material(&mut tx, id).await?;
+    if m.data_zamowienia.is_none() {
+        return Err(BladApi::NieprawidloweDane(format!(
+            "materiał {id} nie jest zamówiony – nie ma czego cofać"
+        )));
+    }
+    cofnij_zamowienie_w(&mut tx, &m).await?;
+    if m.data_dostawy.is_some() {
+        aktualizuj_srednia_rzeczywista(&mut tx, id).await?;
+    }
+    przelicz_jesli_jest_w(&mut tx, m.zlecenie_id).await?;
+    let m = material(&mut tx, id).await?;
+    tx.commit().await?;
+    Ok(m)
+}
+
+async fn cofnij_zamowienie_w(conn: &mut SqliteConnection, m: &Material) -> Wynik<()> {
+    sqlx::query(
+        "UPDATE zamowienia_materialow SET data_zamowienia = NULL, data_dostawy = NULL, status = 'do_zamowienia' WHERE id = ?1",
+    )
+    .bind(m.id)
+    .execute(&mut *conn)
+    .await?;
+    let zadania: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM zadania_kalendarza WHERE zamowienie_id = ?1 AND klucz LIKE 'zamowienie:%' AND wykonano IS NOT NULL",
+    )
+    .bind(m.id)
+    .fetch_all(&mut *conn)
+    .await?;
+    for zid in zadania {
+        sqlx::query("UPDATE zadania_kalendarza SET wykonano = NULL WHERE id = ?1")
+            .bind(zid)
+            .execute(&mut *conn)
+            .await?;
+        dziennik(conn, "zadania_kalendarza", zid, "zmiana").await?;
+    }
+    let opis = format!(
+        "cofnięto zamówienie (było: zamówione {}, dostawa {})",
+        m.data_zamowienia.as_deref().unwrap_or("–"),
+        m.data_dostawy.as_deref().unwrap_or("–")
+    );
+    dziennik_opis(conn, "zamowienia_materialow", m.id, "zmiana", Some(&opis)).await
+}
+
+/// Usuwa materiał niezamówiony. Materiał zamówiony lub dostarczony – 422 (najpierw cofnij
+/// zamówienie), bo usunięcie skasowałoby (ON DELETE CASCADE) jego wykonane zadanie.
+/// Niewykonane zadania materiału są usuwane z wpisem w dzienniku; wykonane (np. potwierdzenie
+/// klienta) zostają jako historia, odłączone od materiału.
 pub async fn usun_material(pula: &SqlitePool, id: i64) -> Wynik<i64> {
     let mut tx = pula.begin().await?;
     let m = material(&mut tx, id).await?;
+    if m.data_zamowienia.is_some() || m.status != "do_zamowienia" {
+        return Err(BladApi::NieprawidloweDane(format!(
+            "materiał {id} ({}) ma status „{}” – usunięcie skasowałoby historię zamówienia. \
+             Najpierw cofnij zamówienie (POST /zamowienia-materialow/{id}/cofnij-zamowienie), potem usuń materiał",
+            m.kategoria_nazwa, m.status
+        )));
+    }
+    sqlx::query(
+        "UPDATE zadania_kalendarza SET zamowienie_id = NULL WHERE zamowienie_id = ?1 AND wykonano IS NOT NULL",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    let zadania: Vec<i64> =
+        sqlx::query_scalar("SELECT id FROM zadania_kalendarza WHERE zamowienie_id = ?1")
+            .bind(id)
+            .fetch_all(&mut *tx)
+            .await?;
+    for zid in zadania {
+        sqlx::query("DELETE FROM zadania_kalendarza WHERE id = ?1")
+            .bind(zid)
+            .execute(&mut *tx)
+            .await?;
+        dziennik_opis(
+            &mut tx,
+            "zadania_kalendarza",
+            zid,
+            "usuniecie",
+            Some(&format!("usunięto materiał {id}")),
+        )
+        .await?;
+    }
     sqlx::query("DELETE FROM zamowienia_materialow WHERE id = ?1")
         .bind(id)
         .execute(&mut *tx)
         .await?;
-    dziennik(&mut tx, "zamowienia_materialow", id, "usuniecie").await?;
+    let opis = format!(
+        "zlecenie {}, {}{}",
+        m.zlecenie_id,
+        m.kategoria_nazwa,
+        m.opis
+            .as_deref()
+            .map(|o| format!(" – {o}"))
+            .unwrap_or_default()
+    );
+    dziennik_opis(
+        &mut tx,
+        "zamowienia_materialow",
+        id,
+        "usuniecie",
+        Some(&opis),
+    )
+    .await?;
+    przelicz_jesli_jest_w(&mut tx, m.zlecenie_id).await?;
     tx.commit().await?;
     Ok(m.zlecenie_id)
 }
@@ -1054,6 +1382,7 @@ pub async fn podglad(pula: &SqlitePool, id: i64) -> Wynik<Harmonogram> {
 #[derive(Debug, Clone, Serialize)]
 pub struct WynikGenerowania {
     pub harmonogram: Harmonogram,
+    /// Liczby rzeczywistych zmian w zadaniach (przeliczenie bez różnic daje same zera).
     pub dodane: usize,
     pub zmienione: usize,
     pub usuniete: usize,
@@ -1061,13 +1390,212 @@ pub struct WynikGenerowania {
     pub zamrozone: usize,
 }
 
+impl WynikGenerowania {
+    fn cokolwiek_zmieniono(&self) -> bool {
+        self.dodane + self.zmienione + self.usuniete > 0
+    }
+}
+
+/// Zlecenie, którego harmonogramu nie udało się przeliczyć (zadania w bazie są nieaktualne).
+#[derive(Debug, Clone, Serialize, PartialEq, FromRow)]
+pub struct NieaktualnyHarmonogram {
+    pub zlecenie_id: i64,
+    pub zlecenie_nazwa: String,
+    pub powod: String,
+}
+
+/// Wynik przeliczenia wszystkich zleceń (po zmianie ustawień, dni wolnych, widełek).
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct WynikPrzeliczeniaWszystkich {
+    pub przeliczone_zlecenia: Vec<i64>,
+    /// Zlecenia, których nie udało się przeliczyć – z powodem; są oznaczone
+    /// `harmonogram_nieaktualny`.
+    pub nieprzeliczone_zlecenia: Vec<NieaktualnyHarmonogram>,
+    /// Zlecenia, w których zadania faktycznie się zmieniły (do zdarzeń WebSocket).
+    #[serde(skip)]
+    pub zmienione_zlecenia: Vec<i64>,
+}
+
+/// Wynik automatycznego przeliczenia jednego zlecenia.
+#[derive(Debug, Clone)]
+pub enum Przeliczenie {
+    /// Brak harmonogramu albo etap po montażu – nic nie liczono.
+    Pominiete,
+    Przeliczone(WynikGenerowania),
+    /// Nie udało się (powód); zlecenie oznaczone jako `harmonogram_nieaktualny`.
+    Nieaktualne(String),
+}
+
 /// Liczy harmonogram i zapisuje zadania zlecenia (wykonane i ręczne zostają bez zmian).
+/// Błąd danych → 422; jeśli zlecenie miało już harmonogram, zostaje on oznaczony jako nieaktualny.
 pub async fn generuj(pula: &SqlitePool, id: i64) -> Wynik<WynikGenerowania> {
     let mut tx = pula.begin().await?;
     let (u, kal) = kalendarz_dni(&mut tx).await?;
-    let wynik = generuj_w(&mut tx, id, &u, &kal).await?;
-    tx.commit().await?;
-    Ok(wynik)
+    match przelicz_w(&mut tx, id, &u, &kal).await? {
+        Ok(w) => {
+            tx.commit().await?;
+            Ok(w)
+        }
+        Err(powod) => {
+            if ma_harmonogram(&mut tx, id).await? {
+                tx.commit().await?;
+            }
+            Err(BladApi::NieprawidloweDane(powod))
+        }
+    }
+}
+
+/// Przeliczenie w punkcie zapisu (SAVEPOINT): sukces zdejmuje znacznik nieaktualności,
+/// błąd danych wycofuje częściowe zmiany i ustawia znacznik z powodem (zwracany jako `Err`
+/// w wyniku). Inne błędy (baza) przechodzą dalej – wywołujący wycofuje całą transakcję.
+async fn przelicz_w(
+    conn: &mut SqliteConnection,
+    id: i64,
+    u: &UstawieniaTerminow,
+    kal: &KalendarzDni,
+) -> Wynik<Result<WynikGenerowania, String>> {
+    let mut sp = sqlx::Connection::begin(&mut *conn).await?;
+    match generuj_w(&mut sp, id, u, kal).await {
+        Ok(w) => {
+            let n = sqlx::query(
+                "UPDATE zlecenia SET harmonogram_nieaktualny_powod = NULL WHERE id = ?1 AND harmonogram_nieaktualny_powod IS NOT NULL",
+            )
+            .bind(id)
+            .execute(&mut *sp)
+            .await?
+            .rows_affected();
+            if n > 0 {
+                dziennik_opis(
+                    &mut sp,
+                    "zlecenia",
+                    id,
+                    "zmiana",
+                    Some("harmonogram przeliczony – znów aktualny"),
+                )
+                .await?;
+            }
+            sp.commit().await?;
+            Ok(Ok(w))
+        }
+        Err(BladApi::NieprawidloweDane(powod)) => {
+            sp.rollback().await?;
+            let n = sqlx::query(
+                "UPDATE zlecenia SET harmonogram_nieaktualny_powod = ?1 WHERE id = ?2 AND harmonogram_nieaktualny_powod IS NOT ?1",
+            )
+            .bind(&powod)
+            .bind(id)
+            .execute(&mut *conn)
+            .await?
+            .rows_affected();
+            if n > 0 {
+                dziennik_opis(
+                    conn,
+                    "zlecenia",
+                    id,
+                    "zmiana",
+                    Some(&format!("harmonogram nieaktualny: {powod}")),
+                )
+                .await?;
+            }
+            Ok(Err(powod))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Zadanie zapisane w bazie (do scalenia i wykrywania rzeczywistych zmian).
+#[derive(FromRow)]
+struct ZapisaneZadanie {
+    id: i64,
+    klucz: Option<String>,
+    wyliczone: bool,
+    wykonano: Option<String>,
+    zamowienie_id: Option<i64>,
+    typ: String,
+    tytul: String,
+    data_od: String,
+    data_do: Option<String>,
+    data_sweet_spot: Option<String>,
+    data_planowa: Option<String>,
+    data_krytyczna: Option<String>,
+}
+
+fn bez_zmian(s: &ZapisaneZadanie, z: &ZadanieWyliczone) -> bool {
+    s.zamowienie_id == z.zamowienie_id
+        && s.typ == z.typ.jako_tekst()
+        && s.tytul == z.tytul
+        && s.data_od == tekst(z.data_od)
+        && s.data_do == z.data_do.map(tekst)
+        && s.data_sweet_spot == z.data_sweet_spot.map(tekst)
+        && s.data_planowa == z.data_planowa.map(tekst)
+        && s.data_krytyczna == z.data_krytyczna.map(tekst)
+        && (z.wykonano.is_none() || s.wykonano == z.wykonano.map(tekst))
+}
+
+/// Zadania `wyliczone = 1` bez klucza (sprzed migracji 0003 albo wstawione przez inne moduły).
+/// Przy przeliczeniu dopasowujemy je do wyliczonych zadań – po typie (montaż, warsztat, rysunki,
+/// pomiar), materiale (zamówienie, potwierdzenie) albo typie i tytule (pozostałe) – i nadajemy
+/// klucz: zachowują id i stan wykonania, a przeliczenie nie tworzy duplikatu. Wiersze, których
+/// nie da się jednoznacznie dopasować, stają się zadaniami ręcznymi (`wyliczone = 0`), więc
+/// użytkownik może je zmienić albo usunąć. Każda zmiana trafia do dziennika.
+async fn dopasuj_zadania_bez_klucza(
+    conn: &mut SqliteConnection,
+    zapisane: &mut [ZapisaneZadanie],
+    wyliczone: &[ZadanieWyliczone],
+) -> Wynik<()> {
+    let mut zajete: HashSet<String> = zapisane.iter().filter_map(|s| s.klucz.clone()).collect();
+    for s in zapisane
+        .iter_mut()
+        .filter(|s| s.wyliczone && s.klucz.is_none())
+    {
+        let kandydat = match (s.typ.as_str(), s.zamowienie_id) {
+            ("montaz" | "warsztat" | "rysunki" | "pomiar", _) => Some(s.typ.clone()),
+            ("zamowienie", Some(m)) => Some(format!("zamowienie:{m}")),
+            ("klient", Some(m)) => Some(format!("potwierdzenie:{m}")),
+            _ => wyliczone
+                .iter()
+                .find(|w| {
+                    w.typ.jako_tekst() == s.typ && w.tytul == s.tytul && !zajete.contains(&w.klucz)
+                })
+                .map(|w| w.klucz.clone()),
+        }
+        .filter(|k| !zajete.contains(k) && wyliczone.iter().any(|w| &w.klucz == k));
+        match kandydat {
+            Some(k) => {
+                sqlx::query("UPDATE zadania_kalendarza SET klucz = ?1 WHERE id = ?2")
+                    .bind(&k)
+                    .bind(s.id)
+                    .execute(&mut *conn)
+                    .await?;
+                dziennik_opis(
+                    conn,
+                    "zadania_kalendarza",
+                    s.id,
+                    "zmiana",
+                    Some(&format!("zadanie wyliczone bez klucza dopasowane do „{k}”")),
+                )
+                .await?;
+                zajete.insert(k.clone());
+                s.klucz = Some(k);
+            }
+            None => {
+                sqlx::query("UPDATE zadania_kalendarza SET wyliczone = 0 WHERE id = ?1")
+                    .bind(s.id)
+                    .execute(&mut *conn)
+                    .await?;
+                dziennik_opis(
+                    conn,
+                    "zadania_kalendarza",
+                    s.id,
+                    "zmiana",
+                    Some("zadanie wyliczone bez klucza, bez odpowiednika – zamienione na ręczne"),
+                )
+                .await?;
+                s.wyliczone = false;
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn generuj_w(
@@ -1080,19 +1608,21 @@ async fn generuj_w(
     let h = kalendarz::policz_z_kalendarzem(&z, &m, u, kal)
         .map_err(|e| BladApi::NieprawidloweDane(e.to_string()))?;
 
-    let istniejace: Vec<(i64, Option<String>, bool, Option<String>)> = sqlx::query_as(
-        "SELECT id, klucz, wyliczone, wykonano FROM zadania_kalendarza WHERE zlecenie_id = ?1",
+    let mut zapisane: Vec<ZapisaneZadanie> = sqlx::query_as(
+        "SELECT id, klucz, wyliczone, wykonano, zamowienie_id, typ, tytul, data_od, data_do, data_sweet_spot, \
+         data_planowa, data_krytyczna FROM zadania_kalendarza WHERE zlecenie_id = ?1 ORDER BY id",
     )
     .bind(id)
     .fetch_all(&mut *conn)
     .await?;
-    let istniejace: Vec<ZadanieIstniejace> = istniejace
-        .into_iter()
-        .map(|(id, klucz, wyliczone, wykonano)| ZadanieIstniejace {
-            id,
-            klucz,
-            wyliczone,
-            wykonane: wykonano.is_some(),
+    dopasuj_zadania_bez_klucza(conn, &mut zapisane, &h.zadania).await?;
+    let istniejace: Vec<ZadanieIstniejace> = zapisane
+        .iter()
+        .map(|s| ZadanieIstniejace {
+            id: s.id,
+            klucz: s.klucz.clone(),
+            wyliczone: s.wyliczone,
+            wykonane: s.wykonano.is_some(),
         })
         .collect();
     let plan = scal(h.zadania.clone(), &istniejace);
@@ -1104,7 +1634,15 @@ async fn generuj_w(
             .await?;
         dziennik(conn, "zadania_kalendarza", *zid, "usuniecie").await?;
     }
+    let mut zmienione = 0;
     for (zid, zad) in &plan.do_zmiany {
+        if zapisane
+            .iter()
+            .find(|s| s.id == *zid)
+            .is_some_and(|s| bez_zmian(s, zad))
+        {
+            continue;
+        }
         sqlx::query(
             "UPDATE zadania_kalendarza SET zamowienie_id = ?1, typ = ?2, tytul = ?3, data_od = ?4, data_do = ?5, \
              data_sweet_spot = ?6, data_planowa = ?7, data_krytyczna = ?8, wykonano = COALESCE(?9, wykonano) WHERE id = ?10",
@@ -1122,13 +1660,25 @@ async fn generuj_w(
         .execute(&mut *conn)
         .await?;
         dziennik(conn, "zadania_kalendarza", *zid, "zmiana").await?;
+        zmienione += 1;
     }
     for zad in &plan.do_dodania {
         let nowe = wstaw_zadanie(conn, Some(id), zad, true).await?;
         dziennik(conn, "zadania_kalendarza", nowe, "dodanie").await?;
     }
-    // migawka terminów w materiałach niezamówionych (zamówione są zamrożone)
+    // Migawka terminów w materiałach. Zamówione: daty zamówienia zamrożone, ale data wymaganej
+    // dostawy zawsze z aktualnego harmonogramu (od niej liczy się `dostawa_zagrozona`).
     for t in &h.materialy {
+        if t.zamowione {
+            sqlx::query(
+                "UPDATE zamowienia_materialow SET data_wymaganej_dostawy = ?1 WHERE id = ?2 AND data_wymaganej_dostawy IS NOT ?1",
+            )
+            .bind(tekst(t.data_wymaganej_dostawy))
+            .bind(t.material_id)
+            .execute(&mut *conn)
+            .await?;
+            continue;
+        }
         sqlx::query(
             "UPDATE zamowienia_materialow SET data_wymaganej_dostawy = ?1, data_sweet_spot = ?2, data_planowa = ?3, \
              data_krytyczna = ?4, dni_min = ?5, dni_max = ?6, dni_srednia = ?7 WHERE id = ?8 AND data_zamowienia IS NULL",
@@ -1146,7 +1696,7 @@ async fn generuj_w(
     }
     Ok(WynikGenerowania {
         dodane: plan.do_dodania.len(),
-        zmienione: plan.do_zmiany.len(),
+        zmienione,
         usuniete: plan.do_usuniecia.len(),
         zamrozone: plan.zamrozone.len(),
         harmonogram: h,
@@ -1190,50 +1740,92 @@ async fn ma_harmonogram(conn: &mut SqliteConnection, id: i64) -> Wynik<bool> {
     Ok(n > 0)
 }
 
-/// Przelicza harmonogram, jeśli zlecenie już go ma (po zmianie zlecenia lub materiałów).
-/// Zwraca `true`, gdy przeliczono. Błąd danych (np. usunięty termin) zostawia stare zadania.
-pub async fn przelicz_jesli_jest(pula: &SqlitePool, id: i64) -> Wynik<bool> {
-    let mut tx = pula.begin().await?;
-    if !ma_harmonogram(&mut tx, id).await? {
-        return Ok(false);
+/// Przelicza harmonogram, jeśli zlecenie już go ma i nie jest po montażu – w transakcji
+/// wywołującego (zapis danych i przeliczenie razem). Nieudane przeliczenie oznacza zlecenie
+/// jako `harmonogram_nieaktualny` (z powodem) i nie przerywa zapisu.
+pub async fn przelicz_jesli_jest_w(conn: &mut SqliteConnection, id: i64) -> Wynik<Przeliczenie> {
+    let etap: Option<String> = sqlx::query_scalar("SELECT etap FROM zlecenia WHERE id = ?1")
+        .bind(id)
+        .fetch_optional(&mut *conn)
+        .await?;
+    let etap = etap.ok_or_else(|| BladApi::NieZnaleziono(format!("zlecenie {id}")))?;
+    if ETAPY_PO_MONTAZU.contains(&etap.as_str()) || !ma_harmonogram(conn, id).await? {
+        return Ok(Przeliczenie::Pominiete);
     }
-    let (u, kal) = kalendarz_dni(&mut tx).await?;
-    match generuj_w(&mut tx, id, &u, &kal).await {
-        Ok(_) => {
-            tx.commit().await?;
-            Ok(true)
-        }
-        Err(BladApi::NieprawidloweDane(m)) => {
-            tracing::warn!("Nie przeliczono harmonogramu zlecenia {id}: {m}");
-            Ok(false)
-        }
-        Err(e) => Err(e),
-    }
+    let (u, kal) = kalendarz_dni(conn).await?;
+    Ok(match przelicz_w(conn, id, &u, &kal).await? {
+        Ok(w) => Przeliczenie::Przeliczone(w),
+        Err(powod) => Przeliczenie::Nieaktualne(powod),
+    })
 }
 
-/// Przelicza wszystkie zlecenia z harmonogramem (po zmianie ustawień, dni wolnych, widełek).
-/// Zwraca id przeliczonych zleceń.
-pub async fn przelicz_wszystkie(pula: &SqlitePool) -> Wynik<Vec<i64>> {
+/// `POST /zlecenia/{id}/przelicz`: przeliczenie istniejącego harmonogramu na żądanie (np. po
+/// zmianie statusu wiersza specyfikacji). Nie tworzy harmonogramu, gdy go nie ma.
+pub async fn przelicz_zlecenie(pula: &SqlitePool, id: i64) -> Wynik<(Zlecenie, Przeliczenie)> {
     let mut tx = pula.begin().await?;
+    let p = przelicz_jesli_jest_w(&mut tx, id).await?;
+    let z = zlecenie(&mut tx, id).await?;
+    tx.commit().await?;
+    Ok((z, p))
+}
+
+/// Dla modułu specyfikacji: po zmianie statusu wiersza (np. `do_potwierdzenia` → `ustalone`)
+/// przelicza – w transakcji wywołującego – zlecenia, których umowa wskazuje tę specyfikację.
+/// Zwraca id zleceń i wynik przeliczenia każdego z nich.
+pub async fn przelicz_po_zmianie_specyfikacji(
+    conn: &mut SqliteConnection,
+    specyfikacja_id: i64,
+) -> Wynik<Vec<(i64, Przeliczenie)>> {
     let ids: Vec<i64> = sqlx::query_scalar(
-        "SELECT DISTINCT t.zlecenie_id FROM zadania_kalendarza t JOIN zlecenia z ON z.id = t.zlecenie_id \
-         WHERE t.klucz IS NOT NULL AND z.etap <> 'zakonczone' ORDER BY 1",
+        "SELECT z.id FROM zlecenia z JOIN umowy u ON u.id = z.umowa_id WHERE u.specyfikacja_id = ?1 ORDER BY z.id",
     )
-    .fetch_all(&mut *tx)
+    .bind(specyfikacja_id)
+    .fetch_all(&mut *conn)
     .await?;
-    let (u, kal) = kalendarz_dni(&mut tx).await?;
-    let mut przeliczone = Vec::new();
+    let mut wynik = Vec::with_capacity(ids.len());
     for id in ids {
-        match generuj_w(&mut tx, id, &u, &kal).await {
-            Ok(_) => przeliczone.push(id),
-            Err(BladApi::NieprawidloweDane(m)) => {
-                tracing::warn!("Nie przeliczono zlecenia {id}: {m}")
+        wynik.push((id, przelicz_jesli_jest_w(conn, id).await?));
+    }
+    Ok(wynik)
+}
+
+/// Przelicza (w transakcji wywołującego) wszystkie zlecenia z harmonogramem poza etapami po
+/// montażu. Nieudane są oznaczane i zwracane z powodem.
+pub async fn przelicz_wszystkie_w(
+    conn: &mut SqliteConnection,
+) -> Wynik<WynikPrzeliczeniaWszystkich> {
+    let zlecenia: Vec<(i64, String)> = sqlx::query_as(&format!(
+        "SELECT DISTINCT z.id, z.nazwa FROM zadania_kalendarza t JOIN zlecenia z ON z.id = t.zlecenie_id \
+         WHERE t.klucz IS NOT NULL AND {SQL_ETAP_PRZELICZANY} ORDER BY 1"
+    ))
+    .fetch_all(&mut *conn)
+    .await?;
+    let (u, kal) = kalendarz_dni(conn).await?;
+    let mut wynik = WynikPrzeliczeniaWszystkich::default();
+    for (id, nazwa) in zlecenia {
+        match przelicz_w(conn, id, &u, &kal).await? {
+            Ok(w) => {
+                wynik.przeliczone_zlecenia.push(id);
+                if w.cokolwiek_zmieniono() {
+                    wynik.zmienione_zlecenia.push(id);
+                }
             }
-            Err(e) => return Err(e),
+            Err(powod) => wynik.nieprzeliczone_zlecenia.push(NieaktualnyHarmonogram {
+                zlecenie_id: id,
+                zlecenie_nazwa: nazwa,
+                powod,
+            }),
         }
     }
+    Ok(wynik)
+}
+
+/// Przelicza wszystkie zlecenia z harmonogramem (`POST /kalendarz/przelicz`).
+pub async fn przelicz_wszystkie(pula: &SqlitePool) -> Wynik<WynikPrzeliczeniaWszystkich> {
+    let mut tx = pula.begin().await?;
+    let w = przelicz_wszystkie_w(&mut tx).await?;
     tx.commit().await?;
-    Ok(przeliczone)
+    Ok(w)
 }
 
 // ===========================================================================
@@ -1285,6 +1877,10 @@ pub struct ZadanieKalendarza {
     pub uwagi: Option<String>,
     pub stan: StanZadania,
     pub zamowienie: Option<InfoZamowienia>,
+    /// Harmonogram zlecenia jest nieaktualny (ostatnie przeliczenie się nie udało) – UI
+    /// powinno pokazać ostrzeżenie z `harmonogram_nieaktualny_powod`.
+    pub harmonogram_nieaktualny: bool,
+    pub harmonogram_nieaktualny_powod: Option<String>,
 }
 
 #[derive(FromRow)]
@@ -1317,14 +1913,16 @@ struct WierszZadania {
     dni_srednia: Option<i64>,
     data_zamowienia: Option<String>,
     data_dostawy: Option<String>,
+    harmonogram_nieaktualny_powod: Option<String>,
 }
 
 /// Filtr listy zadań. Zakres dat: zadania, których okres `[data_od, data_do]` nachodzi na `[od, do]`.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct FiltrZadan {
+    #[serde(deserialize_with = "wej::data_opt")]
     pub od: Option<NaiveDate>,
-    #[serde(rename = "do")]
+    #[serde(rename = "do", deserialize_with = "wej::data_opt")]
     pub do_: Option<NaiveDate>,
     /// Typ albo kilka typów po przecinku, np. `zamowienie,pomiar`.
     pub typ: Option<String>,
@@ -1333,7 +1931,14 @@ pub struct FiltrZadan {
     pub stan: Option<String>,
     pub tylko_niewykonane: bool,
     /// Data „dziś” do wyliczenia stanów (domyślnie dzisiejsza data serwera).
+    #[serde(deserialize_with = "wej::data_opt")]
     pub dzis: Option<NaiveDate>,
+    /// Klucz API w parametrze (dozwolony na każdej trasie, sprawdza go warstwa dostępu).
+    #[serde(rename = "klucz")]
+    pub _klucz: Option<String>,
+    /// Tylko wewnętrznie: jedno zadanie po id.
+    #[serde(skip)]
+    pub id: Option<i64>,
 }
 
 fn lista_wartosci<T>(
@@ -1361,36 +1966,51 @@ pub async fn zadania(
     let typy = lista_wartosci(f.typ.as_deref(), TypZadania::z_tekstu, "typ zadania")?;
     let stany = lista_wartosci(f.stan.as_deref(), Stan::z_tekstu, "stan")?;
     let mut conn = pula.acquire().await?;
-    let wiersze: Vec<WierszZadania> = sqlx::query_as(
+    // Warunki dokładane tylko gdy podane – pozwala to SQLite użyć indeksów
+    // (ix_zadania_koniec dla `od`, ix_zadania_data dla `do`, częściowy ix_zadania_niewykonane).
+    let mut q = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
         "SELECT t.id, t.zlecenie_id, z.nazwa AS zlecenie_nazwa, z.montaz_od, t.zamowienie_id, t.typ, t.klucz, t.tytul, \
          t.data_od, t.data_do, t.data_sweet_spot, t.data_planowa, t.data_krytyczna, t.wyliczone, t.wykonano, t.uwagi, \
          m.kategoria_id, k.nazwa AS kategoria_nazwa, COALESCE(m.dostawca_id, k.domyslny_dostawca_id) AS dostawca_id, \
          d.nazwa AS dostawca_nazwa, m.opis AS zam_opis, m.status AS zam_status, m.data_wymaganej_dostawy, m.dni_min, \
-         m.dni_max, m.dni_srednia, m.data_zamowienia, m.data_dostawy \
+         m.dni_max, m.dni_srednia, m.data_zamowienia, m.data_dostawy, z.harmonogram_nieaktualny_powod \
          FROM zadania_kalendarza t \
          LEFT JOIN zlecenia z ON z.id = t.zlecenie_id \
          LEFT JOIN zamowienia_materialow m ON m.id = t.zamowienie_id AND t.typ = 'zamowienie' \
          LEFT JOIN kategorie_materialow k ON k.id = m.kategoria_id \
          LEFT JOIN dostawcy d ON d.id = COALESCE(m.dostawca_id, k.domyslny_dostawca_id) \
-         WHERE (?1 IS NULL OR COALESCE(t.data_do, t.data_od) >= ?1) AND (?2 IS NULL OR t.data_od <= ?2) \
-           AND (?3 IS NULL OR t.zlecenie_id = ?3) AND (?4 = 0 OR t.wykonano IS NULL) \
-         ORDER BY t.data_od, t.id",
-    )
-    .bind(f.od.map(tekst))
-    .bind(f.do_.map(tekst))
-    .bind(f.zlecenie_id)
-    .bind(f.tylko_niewykonane)
-    .fetch_all(&mut *conn)
-    .await?;
+         WHERE 1 = 1",
+    );
+    if let Some(id) = f.id {
+        q.push(" AND t.id = ").push_bind(id);
+    }
+    if let Some(od) = f.od {
+        q.push(" AND COALESCE(t.data_do, t.data_od) >= ")
+            .push_bind(tekst(od));
+    }
+    if let Some(do_) = f.do_ {
+        q.push(" AND t.data_od <= ").push_bind(tekst(do_));
+    }
+    if let Some(zl) = f.zlecenie_id {
+        q.push(" AND t.zlecenie_id = ").push_bind(zl);
+    }
+    if f.tylko_niewykonane {
+        q.push(" AND t.wykonano IS NULL");
+    }
+    if let Some(t) = &typy {
+        q.push(" AND t.typ IN (");
+        let mut lista = q.separated(", ");
+        for typ in t {
+            lista.push_bind(typ.jako_tekst());
+        }
+        q.push(")");
+    }
+    q.push(" ORDER BY t.data_od, t.id");
+    let wiersze: Vec<WierszZadania> = q.build_query_as().fetch_all(&mut *conn).await?;
     let (u, kal) = kalendarz_dni(&mut conn).await?;
     let blok = blokady(&mut conn, f.zlecenie_id).await?;
     let mut wynik = Vec::with_capacity(wiersze.len());
     for w in wiersze {
-        if let Some(t) = &typy {
-            if !t.iter().any(|t| t.jako_tekst() == w.typ) {
-                continue;
-            }
-        }
         let z = zbuduj_zadanie(w, dzis, &u, &kal, &blok)?;
         if let Some(s) = &stany {
             if !s.contains(&z.stan.stan) {
@@ -1525,6 +2145,8 @@ fn zbuduj_zadanie(
         uwagi: w.uwagi,
         stan,
         zamowienie,
+        harmonogram_nieaktualny: w.harmonogram_nieaktualny_powod.is_some(),
+        harmonogram_nieaktualny_powod: w.harmonogram_nieaktualny_powod,
     })
 }
 
@@ -1536,6 +2158,7 @@ pub async fn zadanie(pula: &SqlitePool, id: i64, dzis: NaiveDate) -> Wynik<Zadan
             .await?;
     let zl = zl.ok_or_else(|| BladApi::NieZnaleziono(format!("zadanie {id}")))?;
     let f = FiltrZadan {
+        id: Some(id),
         zlecenie_id: zl,
         ..Default::default()
     };
@@ -1546,23 +2169,54 @@ pub async fn zadanie(pula: &SqlitePool, id: i64, dzis: NaiveDate) -> Wynik<Zadan
         .ok_or_else(|| BladApi::NieZnaleziono(format!("zadanie {id}")))
 }
 
-/// Oznaczenie wykonania. `wykonano: null` cofa wykonanie (zadanie znów będzie przeliczane).
+/// Oznaczenie wykonania (`PUT /kalendarz/zadania/{id}/wykonanie`). Pola trójstanowe: pominięte –
+/// bez zmian, `null` – wyczyść.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Wykonanie {
-    pub wykonano: Option<NaiveDate>,
-    /// Tylko zamówienia: faktyczna data zamówienia (domyślnie = `wykonano`).
-    pub data_zamowienia: Option<NaiveDate>,
-    /// Tylko zamówienia: faktyczna data dostawy (można dopisać później kolejnym wywołaniem).
-    pub data_dostawy: Option<NaiveDate>,
-    pub uwagi: Option<String>,
+    /// Wymagane: data wykonania (nie z przyszłości) albo `null` = cofnięcie wykonania.
+    #[serde(deserialize_with = "wej::data_tri")]
+    pub wykonano: Option<Option<NaiveDate>>,
+    /// Tylko zamówienia: faktyczna data zamówienia. Pominięta – bez zmian (przy pierwszym
+    /// zamówieniu = `wykonano`); `null` – ustaw na `wykonano`.
+    #[serde(deserialize_with = "wej::data_tri")]
+    pub data_zamowienia: Option<Option<NaiveDate>>,
+    /// Tylko zamówienia: faktyczna data dostawy. Pominięta – bez zmian; `null` – wyczyść.
+    #[serde(deserialize_with = "wej::data_tri")]
+    pub data_dostawy: Option<Option<NaiveDate>>,
+    /// Pominięte – bez zmian; `null` albo pusty tekst – wyczyść.
+    #[serde(deserialize_with = "wej::tri")]
+    pub uwagi: Option<Option<String>>,
+    /// Zamówienie mimo wierszy specyfikacji „do potwierdzenia” (bez tego – 409).
+    pub mimo_blokady: bool,
 }
 
 /// (zlecenie_id, zamowienie_id, typ, klucz)
 type DaneZadaniaDoWykonania = (Option<i64>, Option<i64>, String, Option<String>);
 
-/// Zwraca id zlecenia zadania.
-pub async fn wykonaj(pula: &SqlitePool, id: i64, w: Wykonanie) -> Wynik<Option<i64>> {
+fn nie_z_przyszlosci(co: &str, d: Option<NaiveDate>, dzis: NaiveDate) -> Wynik<()> {
+    match d {
+        Some(d) if d > dzis => Err(BladApi::NieprawidloweDane(format!(
+            "{co} {d} jest z przyszłości (dziś {dzis})"
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// Zapisuje wykonanie (albo jego cofnięcie) i – przy cofnięciu – w tej samej transakcji
+/// przelicza zlecenie. Zwraca id zlecenia zadania.
+pub async fn wykonaj(
+    pula: &SqlitePool,
+    id: i64,
+    w: Wykonanie,
+    dzis: NaiveDate,
+) -> Wynik<Option<i64>> {
+    let wykonano = w.wykonano.ok_or_else(|| {
+        BladApi::NieprawidloweDane(
+            "pole wykonano jest wymagane (data RRRR-MM-DD albo null, aby cofnąć wykonanie)".into(),
+        )
+    })?;
+    nie_z_przyszlosci("data wykonania", wykonano, dzis)?;
     let mut tx = pula.begin().await?;
     let r: Option<DaneZadaniaDoWykonania> = sqlx::query_as(
         "SELECT zlecenie_id, zamowienie_id, typ, klucz FROM zadania_kalendarza WHERE id = ?1",
@@ -1581,47 +2235,78 @@ pub async fn wykonaj(pula: &SqlitePool, id: i64, w: Wykonanie) -> Wynik<Option<i
             "daty zamówienia i dostawy można podać tylko dla zadania zamówienia materiału".into(),
         ));
     }
-    let uwagi = w.uwagi.map(|s| s.trim().to_string());
-    let (wykonano, zam, dost) = match w.wykonano {
-        None => (None, None, None),
-        Some(d) => (
-            Some(d),
-            Some(w.data_zamowienia.unwrap_or(d)),
-            w.data_dostawy,
-        ),
+    let uwagi_sql = match w.uwagi {
+        None => "uwagi",
+        Some(_) => "?2",
     };
-    sqlx::query(
-        "UPDATE zadania_kalendarza SET wykonano = ?1, uwagi = COALESCE(?2, uwagi) WHERE id = ?3",
-    )
+    sqlx::query(&format!(
+        "UPDATE zadania_kalendarza SET wykonano = ?1, uwagi = {uwagi_sql} WHERE id = ?3"
+    ))
     .bind(wykonano.map(tekst))
-    .bind(uwagi.filter(|s| !s.is_empty()))
+    .bind(w.uwagi.flatten().and_then(|s| opis_tekst(Some(s))))
     .bind(id)
     .execute(&mut *tx)
     .await?;
     if let (true, Some(mid)) = (jest_zamowieniem, zamowienie_id) {
-        let status = status_materialu(zam, dost)?;
-        sqlx::query("UPDATE zamowienia_materialow SET data_zamowienia = ?1, data_dostawy = ?2, status = ?3 WHERE id = ?4")
-            .bind(zam.map(tekst))
-            .bind(dost.map(tekst))
-            .bind(status)
-            .bind(mid)
-            .execute(&mut *tx)
-            .await?;
-        dziennik(&mut tx, "zamowienia_materialow", mid, "zmiana").await?;
-        if dost.is_some() {
-            aktualizuj_srednia_rzeczywista(&mut tx, mid).await?;
+        let m = material(&mut tx, mid).await?;
+        match wykonano {
+            None => {
+                if matches!(w.data_zamowienia, Some(Some(_)))
+                    || matches!(w.data_dostawy, Some(Some(_)))
+                {
+                    return Err(BladApi::NieprawidloweDane(
+                        "przy cofnięciu wykonania (wykonano: null) nie podaje się dat zamówienia ani dostawy".into(),
+                    ));
+                }
+                if m.data_zamowienia.is_some() {
+                    cofnij_zamowienie_w(&mut tx, &m).await?;
+                    if m.data_dostawy.is_some() {
+                        aktualizuj_srednia_rzeczywista(&mut tx, mid).await?;
+                    }
+                }
+            }
+            Some(d) => {
+                let zam_bylo = data_opt(m.data_zamowienia.as_deref())?;
+                let dost_bylo = data_opt(m.data_dostawy.as_deref())?;
+                let zam = match w.data_zamowienia {
+                    None => zam_bylo.unwrap_or(d),
+                    Some(z) => z.unwrap_or(d),
+                };
+                let dost = w.data_dostawy.unwrap_or(dost_bylo);
+                nie_z_przyszlosci("data zamówienia", Some(zam), dzis)?;
+                nie_z_przyszlosci("data dostawy", dost, dzis)?;
+                let status = status_materialu(Some(zam), dost)?;
+                let opis_blokady = if zam_bylo.is_none() {
+                    sprawdz_blokade(&mut tx, m.zlecenie_id, m.kategoria_id, w.mimo_blokady).await?
+                } else {
+                    None
+                };
+                sqlx::query("UPDATE zamowienia_materialow SET data_zamowienia = ?1, data_dostawy = ?2, status = ?3 WHERE id = ?4")
+                    .bind(tekst(zam))
+                    .bind(dost.map(tekst))
+                    .bind(status)
+                    .bind(mid)
+                    .execute(&mut *tx)
+                    .await?;
+                dziennik_opis(
+                    &mut tx,
+                    "zamowienia_materialow",
+                    mid,
+                    "zmiana",
+                    opis_blokady.as_deref(),
+                )
+                .await?;
+                if dost != dost_bylo {
+                    aktualizuj_srednia_rzeczywista(&mut tx, mid).await?;
+                }
+            }
         }
     }
     dziennik(&mut tx, "zadania_kalendarza", id, "zmiana").await?;
-    // cofnięcie wykonania: zadanie wraca pod przeliczanie
+    // cofnięcie wykonania: zadanie wraca pod przeliczanie (nieudane → znacznik na zleceniu)
     if wykonano.is_none() {
         if let Some(zl) = zlecenie_id {
-            if ma_harmonogram(&mut tx, zl).await? {
-                let (u, kal) = kalendarz_dni(&mut tx).await?;
-                if let Err(e) = generuj_w(&mut tx, zl, &u, &kal).await {
-                    tracing::warn!("Nie przeliczono zlecenia {zl} po cofnięciu wykonania: {e}");
-                }
-            }
+            przelicz_jesli_jest_w(&mut tx, zl).await?;
         }
     }
     tx.commit().await?;
@@ -1753,13 +2438,15 @@ pub async fn statystyka_dostaw(pula: &SqlitePool) -> Wynik<Vec<StatystykaPary>> 
 
 /// Zadanie wpisane ręcznie (`wyliczone = 0`) – nigdy nie jest przeliczane.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DaneZadaniaRecznego {
     #[serde(default)]
     pub zlecenie_id: Option<i64>,
     pub typ: String,
     pub tytul: String,
+    #[serde(deserialize_with = "wej::data")]
     pub data_od: NaiveDate,
-    #[serde(rename = "data_do", default)]
+    #[serde(default, deserialize_with = "wej::data_opt")]
     pub data_do: Option<NaiveDate>,
     #[serde(default)]
     pub uwagi: Option<String>,
@@ -1787,10 +2474,8 @@ pub async fn zapisz_zadanie_reczne(
     if let Some(z) = d.zlecenie_id {
         zlecenie(&mut tx, z).await?;
     }
-    let uwagi = d
-        .uwagi
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    let uwagi = opis_tekst(d.uwagi);
+    let nowe = id.is_none();
     let id = match id {
         None => {
             let zad = ZadanieWyliczone {
@@ -1814,9 +2499,10 @@ pub async fn zapisz_zadanie_reczne(
             id
         }
         Some(id) => {
+            // ręczne oraz stare „wyliczone” bez klucza (nikt ich nie przelicza) – po zmianie ręczne
             let n = sqlx::query(
-                "UPDATE zadania_kalendarza SET zlecenie_id = ?1, typ = ?2, tytul = ?3, data_od = ?4, data_do = ?5, uwagi = ?6 \
-                 WHERE id = ?7 AND wyliczone = 0",
+                "UPDATE zadania_kalendarza SET zlecenie_id = ?1, typ = ?2, tytul = ?3, data_od = ?4, data_do = ?5, uwagi = ?6, \
+                 wyliczone = 0 WHERE id = ?7 AND (wyliczone = 0 OR klucz IS NULL)",
             )
             .bind(d.zlecenie_id)
             .bind(typ.jako_tekst())
@@ -1836,28 +2522,39 @@ pub async fn zapisz_zadanie_reczne(
             id
         }
     };
-    dziennik(&mut tx, "zadania_kalendarza", id, "zmiana").await?;
+    dziennik(
+        &mut tx,
+        "zadania_kalendarza",
+        id,
+        if nowe { "dodanie" } else { "zmiana" },
+    )
+    .await?;
     tx.commit().await?;
     Ok(id)
 }
 
-/// Usuwa zadanie ręczne. Zadań wyliczonych nie usuwa się (znikają przy przeliczeniu).
+/// Usuwa zadanie ręczne (także stare „wyliczone” bez klucza – nikt ich nie przelicza).
+/// Zadań wyliczonych z kluczem nie usuwa się (znikają przy przeliczeniu).
 pub async fn usun_zadanie_reczne(pula: &SqlitePool, id: i64) -> Wynik<Option<i64>> {
-    let zl: Option<(Option<i64>, bool)> =
-        sqlx::query_as("SELECT zlecenie_id, wyliczone FROM zadania_kalendarza WHERE id = ?1")
-            .bind(id)
-            .fetch_optional(pula)
-            .await?;
+    let mut tx = pula.begin().await?;
+    let zl: Option<(Option<i64>, bool, Option<String>)> = sqlx::query_as(
+        "SELECT zlecenie_id, wyliczone, klucz FROM zadania_kalendarza WHERE id = ?1",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
     match zl {
         None => Err(BladApi::NieZnaleziono(format!("zadanie {id}"))),
-        Some((_, true)) => Err(BladApi::NieprawidloweDane(
+        Some((_, true, Some(_))) => Err(BladApi::NieprawidloweDane(
             "zadania wyliczonego nie można usunąć – zniknie po zmianie danych zlecenia i przeliczeniu".into(),
         )),
-        Some((zl, false)) => {
+        Some((zl, _, _)) => {
             sqlx::query("DELETE FROM zadania_kalendarza WHERE id = ?1")
                 .bind(id)
-                .execute(pula)
+                .execute(&mut *tx)
                 .await?;
+            dziennik(&mut tx, "zadania_kalendarza", id, "usuniecie").await?;
+            tx.commit().await?;
             Ok(zl)
         }
     }
@@ -1875,6 +2572,18 @@ pub struct Tydzien {
     pub dzis: NaiveDate,
     /// Niewykonane zadania z terminem/oknem w tym tygodniu oraz zaległe (po terminie).
     pub zadania: Vec<ZadanieKalendarza>,
+    /// Zlecenia z nieaktualnym harmonogramem (do ostrzeżenia w UI/widżecie).
+    pub nieaktualne_harmonogramy: Vec<NieaktualnyHarmonogram>,
+}
+
+/// Zlecenia oznaczone jako `harmonogram_nieaktualny` (poza etapami po montażu).
+pub async fn nieaktualne_harmonogramy(pula: &SqlitePool) -> Wynik<Vec<NieaktualnyHarmonogram>> {
+    Ok(sqlx::query_as(&format!(
+        "SELECT z.id AS zlecenie_id, z.nazwa AS zlecenie_nazwa, z.harmonogram_nieaktualny_powod AS powod \
+         FROM zlecenia z WHERE z.harmonogram_nieaktualny_powod IS NOT NULL AND {SQL_ETAP_PRZELICZANY} ORDER BY z.id"
+    ))
+    .fetch_all(pula)
+    .await?)
 }
 
 pub async fn tydzien(pula: &SqlitePool, dzis: NaiveDate) -> Wynik<Tydzien> {
@@ -1898,6 +2607,7 @@ pub async fn tydzien(pula: &SqlitePool, dzis: NaiveDate) -> Wynik<Tydzien> {
         do_,
         dzis,
         zadania,
+        nieaktualne_harmonogramy: nieaktualne_harmonogramy(pula).await?,
     })
 }
 
@@ -1916,6 +2626,8 @@ pub struct DoZamowienia {
     pub grupy: Vec<GrupaDostawcy>,
     /// Materiały niezamówione bez terminów (brak widełek albo brak harmonogramu).
     pub bez_terminow: Vec<Material>,
+    /// Zlecenia z nieaktualnym harmonogramem – ich terminy zamówień mogą być błędne.
+    pub nieaktualne_harmonogramy: Vec<NieaktualnyHarmonogram>,
 }
 
 /// Niezamówione materiały pogrupowane wg dostawcy (bez dostawcy = grupa `dostawca_id: null` na końcu),
@@ -1980,6 +2692,7 @@ pub async fn do_zamowienia(
         dzis,
         grupy,
         bez_terminow,
+        nieaktualne_harmonogramy: nieaktualne_harmonogramy(pula).await?,
     })
 }
 
@@ -1989,6 +2702,8 @@ pub struct KolizjaZlecen {
     pub kolizja: Kolizja,
     pub zlecenie_a_nazwa: String,
     pub zlecenie_b_nazwa: String,
+    /// Co najmniej jedno ze zleceń ma nieaktualny harmonogram – kolizja może być nieaktualna.
+    pub harmonogram_nieaktualny: bool,
 }
 
 pub async fn kolizje(
@@ -1996,8 +2711,8 @@ pub async fn kolizje(
     od: Option<NaiveDate>,
     do_: Option<NaiveDate>,
 ) -> Wynik<Vec<KolizjaZlecen>> {
-    let wiersze: Vec<(i64, String, String, String, Option<String>)> = sqlx::query_as(
-        "SELECT t.zlecenie_id, z.nazwa, t.typ, t.data_od, t.data_do FROM zadania_kalendarza t \
+    let wiersze: Vec<(i64, String, bool, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT t.zlecenie_id, z.nazwa, z.harmonogram_nieaktualny_powod IS NOT NULL, t.typ, t.data_od, t.data_do FROM zadania_kalendarza t \
          JOIN zlecenia z ON z.id = t.zlecenie_id \
          WHERE t.typ IN ('warsztat', 'montaz') AND z.etap <> 'zakonczone' \
            AND (?1 IS NULL OR COALESCE(t.data_do, t.data_od) >= ?1) AND (?2 IS NULL OR t.data_od <= ?2)",
@@ -2007,8 +2722,12 @@ pub async fn kolizje(
     .fetch_all(pula)
     .await?;
     let mut nazwy = HashMap::new();
+    let mut nieaktualne = HashSet::new();
     let mut okresy = Vec::new();
-    for (zl, nazwa, typ, od, do_) in wiersze {
+    for (zl, nazwa, nieaktualny, typ, od, do_) in wiersze {
+        if nieaktualny {
+            nieaktualne.insert(zl);
+        }
         let od = data(&od)?;
         okresy.push(Okres {
             zlecenie_id: zl,
@@ -2023,6 +2742,8 @@ pub async fn kolizje(
         .map(|k| KolizjaZlecen {
             zlecenie_a_nazwa: nazwy.get(&k.zlecenie_a).cloned().unwrap_or_default(),
             zlecenie_b_nazwa: nazwy.get(&k.zlecenie_b).cloned().unwrap_or_default(),
+            harmonogram_nieaktualny: nieaktualne.contains(&k.zlecenie_a)
+                || nieaktualne.contains(&k.zlecenie_b),
             kolizja: k,
         })
         .collect())
@@ -2069,7 +2790,8 @@ mod testy {
             },
         )
         .await
-        .unwrap();
+        .unwrap()
+        .0;
         assert_eq!(u.liczenie_dni, LiczenieDni::Kalendarzowe);
         assert_eq!(u.prog_pomaranczowy_dni, 3);
         assert_eq!(u.odstep_materialy_dni, 7);
@@ -2179,18 +2901,15 @@ mod testy {
             },
         )
         .await
-        .unwrap();
+        .unwrap()
+        .0;
         for kat in [fronty, plyta] {
-            zapisz_material(
+            dodaj_material(
                 &pula,
-                Some(z.id),
-                None,
+                z.id,
                 DaneMaterialu {
                     kategoria_id: kat,
-                    dostawca_id: None,
-                    opis: None,
-                    data_zamowienia: None,
-                    data_dostawy: None,
+                    ..Default::default()
                 },
             )
             .await

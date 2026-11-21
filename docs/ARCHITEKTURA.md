@@ -66,7 +66,9 @@ Kluczowa decyzja: **specyfikacja jest osobnym obiektem**, do którego wskazuje w
 
 ## 4. API
 
-Prefiks `/api/v1`. Błędy: JSON `{ "blad": "komunikat po polsku" }` z kodem 401/404/422/500.
+Prefiks `/api/v1`. Błędy: JSON `{ "blad": "komunikat po polsku" }` z kodem 401/404/409/422/500 (409 – operacja
+wymaga jawnego potwierdzenia, patrz 7.4; trasy kalendarza zwracają też błędy deserializacji treści, ścieżki i
+parametrów jako 422 w tym formacie).
 
 | Metoda i ścieżka | Opis |
 | --- | --- |
@@ -116,7 +118,11 @@ Prefiks `/api/v1`. Błędy: JSON `{ "blad": "komunikat po polsku" }` z kodem 401
 ## 7. Silnik terminów (Faza 4a)
 
 Kod: `crates/robinwood-serwer/src/kalendarz/` (czysta logika, bez bazy i HTTP, testy jednostkowe),
-`src/terminarz.rs` (baza), `src/api_kalendarz.rs` (trasy), migracja `0003_silnik_terminow.sql`.
+`src/terminarz.rs` (baza), `src/api_kalendarz.rs` (trasy), migracje `0003_silnik_terminow.sql` i
+`0004_silnik_terminow_poprawki.sql` (znacznik `zlecenia.harmonogram_nieaktualny_powod`, `dziennik_zmian.opis`,
+indeksy zakresów dat). Migracja 0003 została poprawiona w miejscu (`INSERT OR IGNORE` dla ustawień) – nie była
+jeszcze nigdzie wdrożona; baza deweloperska z wcześniejszą wersją 0003 wymaga odtworzenia (sqlx sprawdza sumy
+kontrolne).
 
 ### 7.1. Reguły (liczone wstecz od terminu montażu z umowy)
 
@@ -143,17 +149,49 @@ Kod: `crates/robinwood-serwer/src/kalendarz/` (czysta logika, bez bazy i HTTP, t
 * Nadpisania odstępów w zleceniu (`zlecenia.odstep_*_dni`) mają pierwszeństwo przed ustawieniami.
 * **Zamrażanie**: zadanie wykonane (`wykonano` ≠ NULL) i zadanie ręczne (`wyliczone = 0`, `klucz` NULL) nie są
   zmieniane przy przeliczeniu. Niewykonane zadania wyliczone dostają nowe daty (zachowują `id`), zadania materiałów
-  usuniętych ze zlecenia znikają (wykonane zostają jako historia). Terminy w `zamowienia_materialow` aktualizuje się
-  tylko dla materiałów jeszcze niezamówionych. Identyfikacja zadania: `zadania_kalendarza.klucz`
+  usuniętych ze zlecenia znikają (wykonane zostają jako historia). Zapisywane i liczone (`zmienione`, dziennik) są
+  tylko **rzeczywiste** zmiany – przeliczenie bez różnic daje `dodane = zmienione = usuniete = 0`.
+  Identyfikacja zadania: `zadania_kalendarza.klucz`
   (`montaz`, `warsztat`, `rysunki`, `pomiar`, `zamowienie:<id materiału>`, `potwierdzenie:<id materiału>`,
   `potwierdzenie_montazu`, `pomieszczenie_gotowe`, `brakujace_informacje`, `platnosc:<id>`).
-* **Kiedy przelicza się automatycznie**: po zmianie zlecenia lub jego materiałów (jeśli zlecenie ma już harmonogram)
-  oraz po zmianie ustawień, dni wolnych, widełek kategorii i czasów dostaw (wszystkie zlecenia z harmonogramem poza
-  etapem `zakonczone`). Pierwsze wygenerowanie – jawnie `POST /zlecenia/{id}/harmonogram`.
+* **Migawka w `zamowienia_materialow`**: dla materiałów niezamówionych aktualizowane są wszystkie terminy i widełki.
+  Dla zamówionych daty sweet spot / planowa / krytyczna i widełki są zamrożone, ale **`data_wymaganej_dostawy` zawsze
+  wynika z aktualnego harmonogramu** – od niej liczy się `dostawa_zagrozona` (oczekiwana dostawa = data zamówienia +
+  średni czas, później niż wymagana). Przykład: zamówione 27.12.2026, średnia 21 dni (oczekiwana 17.01.2027), montaż
+  przesunięty z 8.02 na 1.02.2027 → wymagana 11.01, `dostawa_zagrozona: true`.
+* **Stare zadania `wyliczone = 1` bez klucza** (sprzed migracji 0003 albo wstawione przez inne moduły): przy
+  pierwszym przeliczeniu są dopasowywane do wyliczonych zadań – po typie (`montaz`, `warsztat`, `rysunki`,
+  `pomiar`), po materiale (`zamowienie`, `klient` z `zamowienie_id`) albo po typie i tytule – i dostają klucz
+  (zachowują `id` i stan wykonania, nie powstaje duplikat). Niedopasowane stają się ręcznymi (`wyliczone = 0`).
+  Wiersze bez klucza można zmieniać i usuwać jak ręczne (zmiana ustawia `wyliczone = 0`). Każda taka zmiana trafia do
+  dziennika z opisem. Uzasadnienie: dopasowanie zachowuje historię wykonania i odnośniki, a zamiana na ręczne nie
+  kasuje niczego bez wiedzy użytkownika.
+* **Kiedy przelicza się automatycznie**: po zmianie zlecenia lub jego materiałów (jeśli zlecenie ma już harmonogram),
+  po cofnięciu wykonania oraz po zmianie ustawień, dni wolnych, widełek kategorii i czasów dostaw (wszystkie zlecenia z
+  harmonogramem). **Zlecenia w etapach po montażu (`odbior`, `gwarancja`, `zakonczone`) nie są przeliczane
+  automatycznie** (ani przy zmianie ustawień, ani przy zmianie samego zlecenia); jawne `POST /zlecenia/{id}/harmonogram`
+  działa zawsze. Pierwsze wygenerowanie – jawnie `POST /zlecenia/{id}/harmonogram`.
+* **Jedna transakcja**: zapis danych i wywołane nim przeliczenie (jednego albo wszystkich zleceń) idą w jednej
+  transakcji. Błąd bazy wycofuje całość (500 – nic nie zapisano). Przeliczenie nieudane z powodu danych (np. `PUT
+  /zlecenia/{id}` bez `montaz_od`) wycofuje tylko częściowe zmiany zadań (SAVEPOINT): zapis danych się udaje (200), stare
+  zadania zostają, a zlecenie dostaje **znacznik `harmonogram_nieaktualny`** z powodem
+  (`zlecenia.harmonogram_nieaktualny_powod`). Udane przeliczenie zdejmuje znacznik. Ustawienie i zdjęcie znacznika
+  trafia do dziennika.
 * **Blokada „do potwierdzenia”**: wiersz specyfikacji umowy zlecenia (`umowy.specyfikacja_id`) ze statusem
   `do_potwierdzenia` i `kategoria_materialu_id` = kategoria materiału blokuje jego zamówienie: `zablokowane: true`,
   `potwierdzic_do` = data planowa, `wiersze_do_potwierdzenia` = id wierszy. Kolumny
   `wiersze_specyfikacji.termin_potwierdzenia` silnik nie zapisuje (należy do modułu specyfikacji).
+  **Blokada miękka (decyzja tymczasowa)**: pierwsze zamówienie takiego materiału (`PUT …/wykonanie`, albo podanie
+  `data_zamowienia` w `POST /zlecenia/{id}/materialy` / `PUT /zamowienia-materialow/{id}`) bez pola
+  `"mimo_blokady": true` zwraca **409** `{"blad", "kod": "do_potwierdzenia", "wiersze_do_potwierdzenia": [id…]}` i
+  niczego nie zapisuje; z tym polem zamówienie jest przyjmowane, a w `dziennik_zmian.opis` materiału zapisuje się
+  „zamówiono mimo blokady – wiersze specyfikacji do potwierdzenia: …”.
+* **Dla agenta modułu specyfikacji**: blokady są czytane na bieżąco (`zablokowane` w odczytach zmienia się od razu po
+  zmianie statusu wiersza), ale zadania `potwierdzenie:<id materiału>` powstają/znikają dopiero przy przeliczeniu.
+  Po zmianie statusu wiersza (`do_potwierdzenia` ↔ inny) albo kategorii materiału wiersza wywołaj w swojej transakcji
+  `terminarz::przelicz_po_zmianie_specyfikacji(&mut tx, specyfikacja_id)` (przelicza zlecenia, których umowa wskazuje
+  tę specyfikację; zwraca `Vec<(zlecenie_id, Przeliczenie)>`) i po zatwierdzeniu wyślij zdarzenie
+  `zadania_kalendarza` z id zlecenia. Z interfejsu: `POST /zlecenia/{id}/przelicz`.
 
 ### 7.2. Konwencja liczenia dni
 
@@ -175,6 +213,7 @@ odstępów i progów ostrzeżeń.
 * `dni_do_terminu` w stanach to zawsze dni **kalendarzowe** od „dziś” (do wyświetlenia „za 3 dni”, „2 dni po terminie”).
 * Montaż w trybie kalendarzowym może kończyć się w dzień wolny (nie cofamy końca okresu); termin rozpoczęcia montażu
   w dzień wolny daje ostrzeżenie `montaz_w_dzien_wolny`.
+* Daty wejściowe API muszą mieścić się w latach **1990–2100** (`kalendarz::ROK_MIN`/`ROK_MAX`), inaczej 422.
 
 Przykład kontrolny (tryb kalendarzowy, montaż pon. 8.02.2027, warsztat 14 dni, 7-dniowe odstępy): warsztat
 25.01–5.02, dostawa do 18.01, fronty MDF 18–24: sweet spot **23.12.2026** (18.01 − 24 = 25.12 święto → 24.12 Wigilia
@@ -188,7 +227,10 @@ zamówienia” mają stan najpilniejszej pozycji).
 Niezamówiony materiał: `dzis ≤ planowa` → `spokojnie` (opis rozróżnia „przed oknem” i „w oknie”), `dzis > planowa` →
 `zolty`, `dzis ≥ wstecz(krytyczna, prog_pomaranczowy_dni)` (domyślnie 2) → `pomaranczowy`, `dzis > krytyczna` →
 `czerwony` z `przesuniecie_montazu_dni` = dni (w trybie liczenia) między datą wymaganej dostawy a dostawą przy
-zamówieniu dziś ze średnim czasem, oraz `nowy_termin_montazu`. Wygrywa najpilniejszy spełniony warunek (w dniu
+zamówieniu dziś ze średnim czasem, oraz `nowy_termin_montazu` = `naprzod(montaz_od, przesunięcie)`, a gdy wypada w dzień
+wolny – **najbliższy następny dzień roboczy** (w trybie kalendarzowym; w roboczym `naprzod` daje już dzień roboczy).
+Przykład: MDF z przykładu kontrolnego, dziś 2.01.2027 → przesunięcie 5 dni, 8.02 + 5 = sob. 13.02 → **15.02.2027**
+(`przesuniecie_montazu_dni` zostaje 5 – minimalne przesunięcie). Wygrywa najpilniejszy spełniony warunek (w dniu
 planowej: spokojnie; w dniu krytycznej: pomarańczowy; dzień po krytycznej: czerwony).
 
 Pozostałe zadania (termin = `data_do`, a gdy brak – `data_od`): `dzis > termin` → `czerwony`,
@@ -196,32 +238,55 @@ Pozostałe zadania (termin = `data_do`, a gdy brak – `data_od`): `dzis > termi
 
 ### 7.4. API (prefiks `/api/v1`, klucz jak w rozdz. 2)
 
-Daty `RRRR-MM-DD`. Parametr `dzis` (opcjonalny, domyślnie dzisiejsza data serwera) służy do wyliczenia stanów – widżet
-i testy mogą podać własny. Błędy jak w rozdz. 4 (422 z czytelnym komunikatem, np. „zlecenie 3: uzupełnij termin
-rozpoczęcia montażu (montaz_od), aby policzyć harmonogram”).
+Daty `RRRR-MM-DD` (lata 1990–2100). Parametr `dzis` (opcjonalny, domyślnie dzisiejsza data serwera) służy do
+wyliczenia stanów i do kontroli „data z przyszłości” w `wykonanie` – widżet i testy mogą podać własny.
+
+**Błędy** (zawsze JSON `{"blad": "…"}`):
+
+| Kod | Kiedy |
+| --- | --- |
+| 401 | brak / zły klucz (wszystkie trasy poza `/status`) |
+| 404 | brak rekordu (zlecenie, zadanie, materiał, dzień wolny…) |
+| 409 | zamówienie materiału zablokowanego wierszami „do potwierdzenia” bez `mimo_blokady: true`; dodatkowo `"kod": "do_potwierdzenia"`, `"wiersze_do_potwierdzenia": [id…]` |
+| 422 | błąd danych z czytelnym komunikatem (np. „zlecenie 3: uzupełnij termin rozpoczęcia montażu (montaz_od), aby policzyć harmonogram”); także **nieznane pole** w treści, **nieznany parametr** zapytania, niepoprawny JSON / typ / ścieżka (`/zlecenia/abc`), rok spoza 1990–2100, `wykonano`/daty zamówienia i dostawy z przyszłości, usunięcie zamówionego materiału, wyczyszczenie `data_zamowienia` w `PUT` materiału |
+| 500 | błąd bazy – transakcja wycofana, **nic nie zapisano** |
+
+Wszystkie struktury wejściowe odrzucają nieznane pola (np. literówka `czas_warsztatu_dni` → 422 z nazwą pola).
+Parametr `klucz` (klucz API) jest dozwolony w każdym zapytaniu.
+
+**Znacznik nieaktualnego harmonogramu** (patrz 7.1) – pola `harmonogram_nieaktualny: bool` i
+`harmonogram_nieaktualny_powod: string | null` są w: `Zlecenie` (wszystkie trasy zleceń), każdym `Zadanie`
+(`/kalendarz/zadania…`, `tydzien`, `do-zamowienia`, `zadania_zapisane`, odpowiedź `wykonanie`), a w `kolizje` – pole
+`harmonogram_nieaktualny` (któreś ze zleceń). `tydzien` i `do-zamowienia` mają listę `nieaktualne_harmonogramy:
+[{zlecenie_id, zlecenie_nazwa, powod}]` (bez etapów po montażu). Odpowiedzi tras, które przeliczają wszystkie zlecenia
+(`PUT /kalendarz/ustawienia`, `POST /kalendarz/przelicz`, `PUT /kalendarz/dni-wolne/{data}`, `POST/PUT /czasy-dostaw`)
+zawierają `przeliczone_zlecenia: [id]` i `nieprzeliczone_zlecenia: [{zlecenie_id, zlecenie_nazwa, powod}]`.
 
 | Metoda i ścieżka | Opis |
 | --- | --- |
-| `GET/POST /zlecenia`, `GET/PUT /zlecenia/{id}` | zlecenia (`klient_id`, `umowa_id`, `nazwa`, `etap`, `montaz_od`, `czas_warsztat_dni`, `czas_montazu_dni`, `odstep_*_dni`); PUT zwraca też `harmonogram_przeliczony` |
-| `GET/POST /zlecenia/{id}/materialy` | materiały zlecenia (`kategoria_id`, `dostawca_id?`, `opis?`, `data_zamowienia?`, `data_dostawy?`) z migawką terminów |
-| `PUT/DELETE /zamowienia-materialow/{id}` | zmiana / usunięcie materiału |
+| `GET/POST /zlecenia`, `GET/PUT /zlecenia/{id}` | zlecenia (`klient_id`, `umowa_id`, `nazwa`, `etap`, `montaz_od`, `czas_warsztat_dni`, `czas_montazu_dni`, `odstep_*_dni`; PUT = pełna zmiana) + `harmonogram_nieaktualny`, `harmonogram_nieaktualny_powod`; PUT zwraca też `harmonogram_przeliczony` (`false` + znacznik, gdy przeliczenie się nie udało) |
+| `POST /zlecenia/{id}/przelicz` | przeliczenie istniejącego harmonogramu (np. po zmianie statusu wiersza specyfikacji); nie tworzy harmonogramu; odpowiedź jak `PUT /zlecenia/{id}` |
+| `GET/POST /zlecenia/{id}/materialy` | materiały zlecenia (`kategoria_id`, `dostawca_id?`, `opis?`, `data_zamowienia?`, `data_dostawy?`, `mimo_blokady?`) z migawką terminów |
+| `PUT /zamowienia-materialow/{id}` | **zmiana częściowa**: pole pominięte – bez zmian; `null` czyści `dostawca_id`, `opis`, `data_dostawy`. Zmiana opisu/kategorii/dostawcy nie rusza dat zamówienia i dostawy ani wykonania zadania. Podanie `data_zamowienia` (data) zamawia (blokada miękka, `mimo_blokady?`); `data_zamowienia: null` dla zamówionego → 422 (użyj `cofnij-zamowienie`) |
+| `POST /zamowienia-materialow/{id}/cofnij-zamowienie` | jawne cofnięcie zamówienia: czyści daty zamówienia i dostawy, status `do_zamowienia`, zadanie „zamówić” znów niewykonane, przeliczenie; → `Material`; 422, gdy niezamówiony |
+| `DELETE /zamowienia-materialow/{id}` | usunięcie materiału **niezamówionego** (204; materiał i jego niewykonane zadania w dzienniku, wykonane zadania – np. potwierdzenie – zostają jako historia); zamówiony/dostarczony → 422 „najpierw cofnij zamówienie” |
 | `GET /zlecenia/{id}/harmonogram` | podgląd harmonogramu bez zapisu (`Harmonogram`) |
-| `POST /zlecenia/{id}/harmonogram?dzis=` | wygenerowanie/przeliczenie i zapis; `{harmonogram, dodane, zmienione, usuniete, zamrozone, zadania_zapisane}` |
-| `POST /kalendarz/przelicz` | przeliczenie wszystkich zleceń z harmonogramem → `{przeliczone_zlecenia: [...]}` |
+| `POST /zlecenia/{id}/harmonogram?dzis=` | wygenerowanie/przeliczenie i zapis (także w etapie po montażu); `{harmonogram, dodane, zmienione, usuniete, zamrozone, zadania_zapisane}` – liczby rzeczywistych zmian; 422 przy błędzie danych (istniejący harmonogram dostaje wtedy znacznik) |
+| `POST /kalendarz/przelicz` | przeliczenie wszystkich zleceń z harmonogramem (bez etapów po montażu) → `{przeliczone_zlecenia, nieprzeliczone_zlecenia}` |
 | `GET /kalendarz/zadania?od=&do=&typ=&zlecenie_id=&stan=&tylko_niewykonane=&dzis=` | zadania nachodzące na zakres; `typ` i `stan` – jedna wartość albo kilka po przecinku |
 | `GET /kalendarz/zadania/{id}?dzis=` | jedno zadanie |
-| `POST /kalendarz/zadania`, `PUT/DELETE /kalendarz/zadania/{id}` | zadania ręczne (`zlecenie_id?`, `typ`, `tytul`, `data_od`, `data_do?`, `uwagi?`); wyliczonych nie można zmieniać ani usuwać (422) |
-| `PUT /kalendarz/zadania/{id}/wykonanie` | `{wykonano: "2026-12-10" \| null, data_zamowienia?, data_dostawy?, uwagi?}` – dla zamówień ustawia też materiał (`data_zamowienia` domyślnie = `wykonano`, status `zamowione`/`dostarczone`); `wykonano: null` cofa wykonanie i przelicza zlecenie |
-| `GET /kalendarz/tydzien?dzis=` | `{od, do, dzis, zadania}` – niewykonane z terminem/oknem w tygodniu (pon.–niedz.) + wszystkie zaległe (czerwone) |
-| `GET /kalendarz/do-zamowienia?dzis=&horyzont=` | `{dzis, grupy: [{dostawca_id, dostawca_nazwa, stan, pozycje: [Zadanie]}], bez_terminow: [Material]}`; grupy alfabetycznie, „bez dostawcy” na końcu, pozycje wg daty planowej |
-| `GET /kalendarz/kolizje?od=&do=` | `[{typ, zlecenie_a, zlecenie_b, od, do, zlecenie_a_nazwa, zlecenie_b_nazwa}]` – nakładanie się warsztatu lub montażu |
+| `POST /kalendarz/zadania`, `PUT/DELETE /kalendarz/zadania/{id}` | zadania ręczne (`zlecenie_id?`, `typ`, `tytul`, `data_od`, `data_do?`, `uwagi?`); wyliczonych z kluczem nie można zmieniać ani usuwać (422); stare wyliczone bez klucza – można (stają się ręczne) |
+| `PUT /kalendarz/zadania/{id}/wykonanie?dzis=` | `{wykonano: "2026-12-10" \| null, data_zamowienia?, data_dostawy?, uwagi?, mimo_blokady?}`. **`wykonano` wymagane** (brak pola → 422; data z przyszłości względem `dzis` → 422). Pola pominięte – **bez zmian**: `data_dostawy` pominięta zostaje (status `dostarczone` się nie cofa), `null` – czyści (→ `zamowione`); `data_zamowienia` pominięta – bez zmian (przy pierwszym zamówieniu = `wykonano`), `null` – = `wykonano`; `uwagi` pominięte – bez zmian, `null`/`""` – czyści. Pierwsze zamówienie zablokowanego materiału bez `mimo_blokady: true` → 409. `wykonano: null` cofa wykonanie (dla zamówienia także zamówienie materiału) i w tej samej transakcji przelicza zlecenie (nieudane → 200 + `harmonogram_nieaktualny`) |
+| `GET /kalendarz/tydzien?dzis=` | `{od, do, dzis, zadania, nieaktualne_harmonogramy}` – niewykonane z terminem/oknem w tygodniu (pon.–niedz.) + wszystkie zaległe (czerwone) |
+| `GET /kalendarz/do-zamowienia?dzis=&horyzont=` | `{dzis, grupy: [{dostawca_id, dostawca_nazwa, stan, pozycje: [Zadanie]}], bez_terminow: [Material], nieaktualne_harmonogramy}`; grupy alfabetycznie, „bez dostawcy” na końcu, pozycje wg daty planowej |
+| `GET /kalendarz/kolizje?od=&do=` | `[{typ, zlecenie_a, zlecenie_b, od, do, zlecenie_a_nazwa, zlecenie_b_nazwa, harmonogram_nieaktualny}]` – nakładanie się warsztatu lub montażu |
 | `GET /kalendarz/statystyka-dostaw` | rzeczywiste czasy dostaw par kategoria + dostawca: `statystyka {liczba, min, max, srednia, sugerowane_widelki}`, `aktualne_widelki`, `sugerowana_korekta` (bez automatycznego nadpisywania) |
-| `GET/PUT /kalendarz/ustawienia` | `UstawieniaTerminow`; PUT częściowy, zwraca też `przeliczone_zlecenia` |
-| `GET /kalendarz/dni-wolne?od=&do=`, `PUT/DELETE /kalendarz/dni-wolne/{data}` | dni wolne użytkownika (`{rodzaj: swieto\|urlop\|przerwa_dostawcow\|inne, opis}`) |
-| `GET /kalendarz/swieta?rok=` | wyliczone święta ustawowe `[{data, nazwa}]` |
+| `GET/PUT /kalendarz/ustawienia` | `UstawieniaTerminow`; PUT częściowy, w jednej transakcji z przeliczeniem; zwraca też `przeliczone_zlecenia` i `nieprzeliczone_zlecenia` |
+| `GET /kalendarz/dni-wolne?od=&do=`, `PUT/DELETE /kalendarz/dni-wolne/{data}` | dni wolne użytkownika (`{rodzaj: swieto\|urlop\|przerwa_dostawcow\|inne, opis}`); PUT zwraca `DzienWolny` + `przeliczone_zlecenia`, `nieprzeliczone_zlecenia` |
+| `GET /kalendarz/swieta?rok=` | wyliczone święta ustawowe `[{data, nazwa}]`; `rok` 1990–2100, inaczej 422 |
 | `GET/POST /dostawcy`, `PUT /dostawcy/{id}` | dostawcy |
-| `PUT /kategorie-materialow/{id}/widelki` | `{dni_dostawy_min, dni_dostawy_max, domyslny_dostawca_id?}` → 204 |
-| `GET/POST /czasy-dostaw`, `PUT/DELETE /czasy-dostaw/{id}` | widełki pary `{kategoria_id, dostawca_id, dni_min, dni_max}` |
+| `PUT /kategorie-materialow/{id}/widelki` | `{dni_dostawy_min, dni_dostawy_max, domyslny_dostawca_id?}` → 204 (nieudane przeliczenia widać po znaczniku zleceń) |
+| `GET/POST /czasy-dostaw`, `PUT/DELETE /czasy-dostaw/{id}` | widełki pary `{kategoria_id, dostawca_id, dni_min, dni_max}`; POST/PUT zwracają rekord + `przeliczone_zlecenia`, `nieprzeliczone_zlecenia` |
 
 **Zdarzenia WebSocket**: `zlecenia`, `zamowienia_materialow`, `dostawcy`, `kategorie_materialow`, `czasy_dostaw`,
 `ustawienia`, `dni_wolne` (id rekordu albo 0) oraz `zadania_kalendarza` – tu **`id` = id zlecenia**, którego zadania
@@ -247,7 +312,8 @@ Przykład – `GET /kalendarz/zadania?typ=zamowienie&tylko_niewykonane=true&dzis
     "dni_min": 5, "dni_max": 10, "dni_srednia": 7, "data_zamowienia": null, "data_dostawy": null,
     "oczekiwana_dostawa": null, "dostawa_zagrozona": false,
     "zablokowane": false, "potwierdzic_do": null, "wiersze_do_potwierdzenia": []
-  }
+  },
+  "harmonogram_nieaktualny": false, "harmonogram_nieaktualny_powod": null
 }]
 ```
 
@@ -288,4 +354,22 @@ Kody ostrzeżeń: `brak_widelek`, `nieprawidlowe_widelki`, `do_potwierdzenia`, `
   specyfikacji (`wiersze_do_potwierdzenia`).
 * Ekran ustawień: widełki kategorii (0–0 = brak), pary kategoria + dostawca, odstępy i progi, dni wolne, podgląd świąt;
   przy statystyce `sugerowana_korekta: true` – przycisk „przyjmij sugerowane widełki” (wysyła `PUT /czasy-dostaw/{id}`).
+* `harmonogram_nieaktualny: true` (zlecenie, zadanie, kolizja) albo niepusta lista `nieaktualne_harmonogramy` /
+  `nieprzeliczone_zlecenia` → pokazać ostrzeżenie „harmonogram nieaktualny: {powod}” (terminy mogą być błędne) z
+  odnośnikiem do zlecenia; znacznik znika po udanym przeliczeniu.
+* 409 z `kod: "do_potwierdzenia"` przy zamawianiu → okno „Klient nie potwierdził pozycji … – zamówić mimo to?”;
+  „tak” = ponowne wysłanie z `"mimo_blokady": true`.
+* Usunięcie zamówionego materiału: UI najpierw proponuje „Cofnij zamówienie” (`POST …/cofnij-zamowienie`).
+* Edycja materiału wysyła tylko zmienione pola (PUT częściowy).
 * Typy TypeScript i metody klienta (`src/api/typy.ts`, `src/api/klient.ts`) dopisuje agent UI na podstawie tego rozdziału.
+
+### 7.6. Do decyzji użytkownika (obecne zachowanie bez zmian)
+
+* Wigilia (24.12, od 2025 r.) liczona jako dzień wolny.
+* Średnia z widełek zaokrąglana w dół (późniejsza data planowa).
+* Montaż rozpoczynający się w dzień wolny – tylko ostrzeżenie `montaz_w_dzien_wolny`, termin nie jest przesuwany.
+* Progi ostrzeżeń w trybie kalendarzowym cofane na dzień roboczy (np. krytyczna pon. 8.03 − 2 = sob. 6.03 → próg
+  pt. 5.03).
+* Definicja kolizji warsztatu (nakładanie się okresów składania dwóch zleceń, bez uwzględnienia pojemności warsztatu;
+  pomijany tylko etap `zakonczone`).
+* Termin rysunków liczony od najwcześniejszej daty planowej wszystkich materiałów, także już zamówionych.

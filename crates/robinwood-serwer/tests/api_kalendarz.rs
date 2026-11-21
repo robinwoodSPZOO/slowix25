@@ -265,9 +265,9 @@ async fn pelny_scenariusz_harmonogramu() {
         )
         .await;
     let fr = znajdz(&cz, "klucz", &format!("zamowienie:{}", s.fronty));
-    // zamówione 2.01 + 21 = 23.01; wymagana 18.01 → 5 dni → montaż 13.02
+    // zamówione 2.01 + 21 = 23.01; wymagana 18.01 → 5 dni → 8.02 + 5 = sob. 13.02 → pon. 15.02
     assert_eq!(fr["stan"]["przesuniecie_montazu_dni"], 5);
-    assert_eq!(fr["stan"]["nowy_termin_montazu"], "2027-02-13");
+    assert_eq!(fr["stan"]["nowy_termin_montazu"], "2027-02-15");
     znajdz(&cz, "klucz", "rysunki");
     znajdz(&cz, "klucz", "pomiar");
     let (st, _) = app
@@ -310,7 +310,7 @@ async fn pelny_scenariusz_harmonogramu() {
     let w = app
         .ok(
             "PUT",
-            &format!("/api/v1/kalendarz/zadania/{pomiar_id}/wykonanie"),
+            &format!("/api/v1/kalendarz/zadania/{pomiar_id}/wykonanie?dzis=2027-01-20"),
             Some(json!({ "wykonano": "2026-12-10" })),
         )
         .await;
@@ -319,7 +319,7 @@ async fn pelny_scenariusz_harmonogramu() {
     let w = app
         .ok(
             "PUT",
-            &format!("/api/v1/kalendarz/zadania/{fr_id}/wykonanie"),
+            &format!("/api/v1/kalendarz/zadania/{fr_id}/wykonanie?dzis=2027-01-20"),
             Some(json!({ "wykonano": "2026-12-27" })),
         )
         .await;
@@ -330,7 +330,7 @@ async fn pelny_scenariusz_harmonogramu() {
     let w = app
         .ok(
             "PUT",
-            &format!("/api/v1/kalendarz/zadania/{fr_id}/wykonanie"),
+            &format!("/api/v1/kalendarz/zadania/{fr_id}/wykonanie?dzis=2027-01-20"),
             Some(json!({ "wykonano": "2026-12-27", "data_dostawy": "2027-01-15" })),
         )
         .await;

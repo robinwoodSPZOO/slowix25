@@ -18,7 +18,7 @@ pub mod scalanie;
 pub mod stany;
 pub mod statystyka;
 
-pub use dni::{swieta, KalendarzDni, LiczenieDni, Swieto};
+pub use dni::{obslugiwany_rok, swieta, KalendarzDni, LiczenieDni, Swieto, ROK_MAX, ROK_MIN};
 pub use harmonogram::{
     policz_harmonogram, policz_z_kalendarzem, BladHarmonogramu, Harmonogram, MaterialWejscie,
     Ostrzezenie, PlatnoscWejscie, TerminyMaterialu, TypZadania, UstawieniaTerminow, Widelki,
