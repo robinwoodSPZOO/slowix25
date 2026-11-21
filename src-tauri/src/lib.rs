@@ -7,6 +7,7 @@
 
 mod konfiguracja;
 mod powiadomienia;
+mod widzet;
 mod zasobnik;
 
 use std::net::{Ipv4Addr, SocketAddr};
@@ -103,7 +104,27 @@ fn powiadomienie_testowe(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn przelacz_widzet(app: AppHandle) {
-    zasobnik::przelacz_okno(&app, zasobnik::OKNO_WIDZET);
+    widzet::przelacz(&app);
+}
+
+#[tauri::command]
+fn ukryj_widzet(app: AppHandle) {
+    widzet::ustaw_widocznosc(&app, false);
+}
+
+/// Powiadomienie Windows z planera powiadomień (logika „co i kiedy” – interfejs, src/lib/powiadomienia.ts).
+#[tauri::command]
+fn pokaz_powiadomienie(app: AppHandle, tytul: String, tresc: String) -> Result<(), String> {
+    powiadomienia::pokaz(&app, &tytul, &tresc).map_err(|e| e.to_string())
+}
+
+/// Widżet → okno główne: pokazuje je i przechodzi pod ścieżkę (np. `/kalendarz?zadanie=5`).
+#[tauri::command]
+fn otworz_sciezke(app: AppHandle, sciezka: String) {
+    zasobnik::pokaz_okno(&app, zasobnik::OKNO_GLOWNE);
+    if sciezka.starts_with('/') {
+        let _ = app.emit_to(zasobnik::OKNO_GLOWNE, "robinwood://przejdz", sciezka);
+    }
 }
 
 /// Interfejs zapisał szkice po zdarzeniu `robinwood://przed-zamknieciem` – chowamy okno.
@@ -202,6 +223,9 @@ pub fn run() {
             wyszukaj_serwery,
             powiadomienie_testowe,
             przelacz_widzet,
+            ukryj_widzet,
+            pokaz_powiadomienie,
+            otworz_sciezke,
             otworz_glowne_okno,
             ukryj_glowne_okno,
             zakoncz_aplikacje,
@@ -216,15 +240,21 @@ pub fn run() {
             uruchom_serwer_jesli_trzeba(&handle);
             zasobnik::utworz(&handle)?;
 
+            // Widżet: zapamiętana pozycja; widoczny przy każdym starcie, chyba że użytkownik go schował.
+            // Autostart (--zminimalizowany): bez okna głównego – tylko zasobnik i widżet.
             let zminimalizowany = std::env::args().any(|a| a == ARG_ZMINIMALIZOWANY);
-            if zminimalizowany {
-                zasobnik::pokaz_okno(&handle, zasobnik::OKNO_WIDZET);
-            } else {
+            widzet::przywroc(&handle);
+            if !zminimalizowany {
                 zasobnik::pokaz_okno(&handle, zasobnik::OKNO_GLOWNE);
             }
             Ok(())
         })
         .on_window_event(|okno, zdarzenie| {
+            if let WindowEvent::Moved(poz) = zdarzenie {
+                if okno.label() == zasobnik::OKNO_WIDZET {
+                    widzet::po_przesunieciu(okno.app_handle(), *poz);
+                }
+            }
             // Zamknięcie okna chowa je do zasobnika; program kończy „Zakończ” w menu zasobnika.
             if let WindowEvent::CloseRequested { api, .. } = zdarzenie {
                 api.prevent_close();

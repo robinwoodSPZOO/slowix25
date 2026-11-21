@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { usePolaczenie } from "../../kontekst/Polaczenie";
+import { UstawieniaPowiadomien } from "../kalendarz/UstawieniaPowiadomien";
 import {
   autostart,
   powiadomienieTestowe,
@@ -132,13 +133,14 @@ function FormularzUstawien({ polaczenie }: { polaczenie: Polaczenie }) {
             checked={!!autostartWl}
             onChange={(e) => przelaczAutostart(e.target.checked)}
           />{" "}
-          Uruchamiaj z systemem (zminimalizowany do zasobnika)
+          Uruchamiaj z systemem Windows (bez okna – tylko ikona w zasobniku i widżet na pulpicie)
         </label>
       </div>
       <div className="pasek">
         <button onClick={() => powiadomienieTestowe().catch((e) => ustawBlad(String(e)))}>Powiadomienie testowe</button>
         <button onClick={() => przelaczWidzet()}>Pokaż / ukryj widżet</button>
       </div>
+      <UstawieniaPowiadomien />
     </>
   );
 }

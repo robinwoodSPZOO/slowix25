@@ -178,7 +178,8 @@ function WierszPary({ c, onWynik }: { c: CzasDostawy; onWynik: (w: WynikPrzelicz
       </td>
       <td className="kolumna-kwoty">{a !== null && b !== null && !bladPol ? Math.floor((a + b) / 2) : "—"}</td>
       <td className="kolumna-kwoty">{c.dni_srednia_rzeczywista !== null ? c.dni_srednia_rzeczywista.toFixed(1) : "—"}</td>
-      <td className="akcje-wiersza">
+      <td>
+<div className="akcje-wiersza">
         {bladPol && <EtykietaStatusu stan="czerwony" ikona={CircleAlert} tekst={bladPol} />}
         {zmienione && (
           <Przycisk
@@ -216,7 +217,8 @@ function WierszPary({ c, onWynik }: { c: CzasDostawy; onWynik: (w: WynikPrzelicz
           }}
         />
         {blad && <div className="pole__blad">{blad}</div>}
-      </td>
+      </div>
+</td>
     </tr>
   );
 }
@@ -474,14 +476,16 @@ function SekcjaDostawcow({ dostawcy, onZmiana }: { dostawcy: Dostawca[]; onZmian
                   <td>
                     <input type="checkbox" aria-label="Aktywny" checked={edycja.aktywny} onChange={(e) => ustawEdycje({ ...edycja, aktywny: e.target.checked })} />
                   </td>
-                  <td className="akcje-wiersza">
+                  <td>
+<div className="akcje-wiersza">
                     <Przycisk maly wariant="glowny" onClick={() => void zapisz()}>
                       Zapisz
                     </Przycisk>
                     <Przycisk maly onClick={() => ustawEdycje(null)}>
                       Anuluj
                     </Przycisk>
-                  </td>
+                  </div>
+</td>
                 </tr>
               ) : (
                 <tr key={d.id}>

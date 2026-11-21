@@ -1,6 +1,9 @@
-import { HashRouter, NavLink, Route, Routes } from "react-router-dom";
+import { useEffect } from "react";
+import { HashRouter, NavLink, Route, Routes, useNavigate } from "react-router-dom";
 import { usePolaczenie } from "./kontekst/Polaczenie";
 import { MODULY, type Modul } from "./moduly/rejestr";
+import { usePlanerPowiadomien } from "./lib/planerPowiadomien";
+import { nasluchujNawigacji } from "./lib/tauri";
 
 function BrakPolaczenia() {
   return (
@@ -38,9 +41,26 @@ function PasekStanu() {
   );
 }
 
+/** Kalendarz (Faza 4b): przejścia z widżetu do zadania i planer powiadomień Windows. */
+function UslugiKalendarza() {
+  const przejdz = useNavigate();
+  usePlanerPowiadomien();
+  useEffect(() => {
+    let koniec: (() => void) | undefined;
+    let aktywny = true;
+    void nasluchujNawigacji((s) => przejdz(s)).then((k) => (aktywny ? (koniec = k) : k()));
+    return () => {
+      aktywny = false;
+      koniec?.();
+    };
+  }, [przejdz]);
+  return null;
+}
+
 export function App() {
   return (
     <HashRouter>
+      <UslugiKalendarza />
       <div className="uklad">
         <nav className="menu">
           <div className="logo">ROBINWOOD</div>

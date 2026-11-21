@@ -27,7 +27,7 @@ pub fn utworz(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, zdarzenie| match zdarzenie.id().as_ref() {
             "otworz" => pokaz_okno(app, OKNO_GLOWNE),
-            "widzet" => przelacz_okno(app, OKNO_WIDZET),
+            "widzet" => crate::widzet::przelacz(app),
             "powiadomienie" => {
                 if let Err(e) = crate::powiadomienia::testowe(app) {
                     tracing::warn!("Powiadomienie testowe nie powiodło się: {e}");
@@ -64,15 +64,5 @@ pub fn pokaz_okno<R: Runtime>(app: &AppHandle<R>, etykieta: &str) {
         let _ = okno.unminimize();
         let _ = okno.show();
         let _ = okno.set_focus();
-    }
-}
-
-pub fn przelacz_okno<R: Runtime>(app: &AppHandle<R>, etykieta: &str) {
-    if let Some(okno) = app.get_webview_window(etykieta) {
-        if okno.is_visible().unwrap_or(false) {
-            let _ = okno.hide();
-        } else {
-            let _ = okno.show();
-        }
     }
 }

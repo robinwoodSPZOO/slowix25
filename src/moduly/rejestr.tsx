@@ -7,6 +7,7 @@ import { ListaKlientow } from "./klienci/ListaKlientow";
 import { Oferty } from "./oferty/Oferty";
 import { Umowy } from "./umowy/Umowy";
 import { Kalendarz } from "./kalendarz/Kalendarz";
+import { Zamowienia } from "./zamowienia/Zamowienia";
 import { Korespondencja } from "./korespondencja/Korespondencja";
 import { Slowniki } from "./slowniki/Slowniki";
 import { Ustawienia } from "./ustawienia/Ustawienia";
@@ -26,6 +27,7 @@ export const MODULY: Modul[] = [
   { sciezka: "/oferty", nazwa: "Oferty", komponent: Oferty, wymagaPolaczenia: true },
   { sciezka: "/umowy", nazwa: "Umowy", komponent: Umowy, wymagaPolaczenia: true },
   { sciezka: "/kalendarz", nazwa: "Kalendarz", komponent: Kalendarz, wymagaPolaczenia: true },
+  { sciezka: "/zamowienia", nazwa: "Zamówienia", komponent: Zamowienia, wymagaPolaczenia: true },
   { sciezka: "/korespondencja", nazwa: "Korespondencja", komponent: Korespondencja, wymagaPolaczenia: true },
   { sciezka: "/slowniki", nazwa: "Słowniki", komponent: Slowniki, wymagaPolaczenia: true },
   { sciezka: "/ustawienia", nazwa: "Ustawienia", komponent: Ustawienia, wymagaPolaczenia: false },

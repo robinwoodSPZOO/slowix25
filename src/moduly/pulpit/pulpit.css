@@ -1,0 +1,51 @@
+/* Pulpit (Faza 4b). */
+.pulpit { display: flex; flex-direction: column; gap: var(--o-12); }
+.pulpit h1 { margin: 0; }
+.liczniki-pulpitu { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--o-12); }
+.licznik-pulpitu { display: grid; grid-template-columns: auto auto 1fr; align-items: center; gap: var(--o-8); padding: var(--o-12) var(--o-16); border-radius: var(--r-8); text-decoration: none; font-size: var(--rozmiar-tabela); }
+.licznik-pulpitu strong { font-size: 26px; line-height: 1; }
+.licznik-pulpitu:focus-visible { outline: none; box-shadow: var(--fokus); }
+.siatka-pulpitu { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--o-12); align-items: start; }
+.sekcja-pulpitu { padding: var(--o-12) var(--o-16); display: flex; flex-direction: column; gap: var(--o-8); overflow: visible; }
+.sekcja-pulpitu--szeroka { grid-column: 1 / -1; }
+.sekcja-pulpitu--uwaga { border-color: var(--stan-pomaranczowy); }
+.sekcja-pulpitu h2 { margin: 0; font-size: var(--rozmiar-h3); display: flex; align-items: center; gap: var(--o-6); }
+.sekcja-pulpitu .pusto { margin: 0; color: var(--tekst-drugorzedny); font-size: var(--rozmiar-etykieta); }
+.sekcja-pulpitu a { color: var(--akcent); }
+.lista-pulpitu { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; max-height: 360px; overflow: auto; }
+.pozycja-pulpitu { display: flex; align-items: center; gap: var(--o-8); padding: var(--o-6) 0; border-bottom: 1px solid var(--linia); }
+.pozycja-pulpitu:last-child { border-bottom: 0; }
+.pozycja-pulpitu__ikona { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: var(--r-4); background: var(--kolor); color: #fff; flex: none; }
+.pozycja-pulpitu__tekst { flex: 1; min-width: 0; display: flex; flex-direction: column; font-size: var(--rozmiar-tabela); }
+.pozycja-pulpitu__tekst a { font-weight: var(--waga-srednia); color: var(--tekst); text-decoration: none; }
+.pozycja-pulpitu__tekst a:hover { text-decoration: underline; }
+.pozycja-pulpitu__tekst span { font-size: var(--rozmiar-mikro); color: var(--tekst-drugorzedny); }
+.pozycja-pulpitu__stan { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex: none; }
+.pozycja-pulpitu__stan small { font-size: var(--rozmiar-mikro); color: var(--tekst-drugorzedny); }
+.tydzien-pulpitu { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: var(--o-6); }
+.dzien-pulpitu { background: var(--tlo-powierzchni-2); border-radius: var(--r-6); padding: var(--o-6); min-width: 0; min-height: 80px; }
+.dzien-pulpitu--dzis { box-shadow: inset 0 0 0 2px var(--akcent); background: var(--akcent-jasny); }
+.dzien-pulpitu--miniony { opacity: 0.7; }
+.dzien-pulpitu h3 { margin: 0 0 var(--o-4); font-size: var(--rozmiar-etykieta); text-transform: capitalize; }
+.dzien-pulpitu h3 span { font-weight: var(--waga-normalna); color: var(--tekst-drugorzedny); }
+.dzien-pulpitu ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.dzien-pulpitu li a { display: flex; align-items: center; gap: 4px; padding: 2px 4px; border-left: 3px solid var(--kolor); background: color-mix(in srgb, var(--kolor) 12%, white); border-radius: 3px; font-size: var(--rozmiar-mikro); color: var(--tekst); text-decoration: none; }
+.dzien-pulpitu li a svg { flex: none; color: var(--kolor); }
+.dzien-pulpitu li a span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lista-prosta { margin: 0; padding-left: var(--o-16); font-size: var(--rozmiar-tabela); display: flex; flex-direction: column; gap: var(--o-4); }
+.kolizja { list-style: none; margin-left: calc(-1 * var(--o-16)); display: flex; gap: var(--o-6); align-items: flex-start; }
+.kolizja svg { color: var(--kolor); flex: none; margin-top: 2px; }
+.tablica-etapow { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: var(--o-4); }
+.kolumna-etapu { background: var(--tlo-powierzchni-2); border-radius: var(--r-6); padding: var(--o-4); min-width: 0; }
+.kolumna-etapu h3 { margin: 0 0 var(--o-4); font-size: var(--rozmiar-mikro); display: flex; justify-content: space-between; }
+.kolumna-etapu h3 span { color: var(--tekst-drugorzedny); }
+.kolumna-etapu ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.kolumna-etapu li { background: var(--tlo-powierzchni); border: 1px solid var(--linia); border-radius: var(--r-4); padding: 3px 4px; display: flex; flex-direction: column; font-size: var(--rozmiar-mikro); min-width: 0; }
+.kolumna-etapu li a { font-weight: var(--waga-srednia); overflow-wrap: anywhere; }
+.kolumna-etapu small { color: var(--tekst-drugorzedny); }
+.tekst-ostrzezenia { color: var(--stan-pomaranczowy) !important; display: inline-flex; align-items: center; gap: 2px; }
+.stopka-pulpitu { font-size: var(--rozmiar-mikro); color: var(--tekst-wyciszony); margin: 0; }
+@media (max-width: 1500px) {
+  .siatka-pulpitu { grid-template-columns: minmax(0, 1fr); }
+  .tablica-etapow { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
