@@ -1,13 +1,19 @@
-import { Zaslepka } from "../Zaslepka";
+import { Route, Routes } from "react-router-dom";
+import { EkranAneksu } from "./EkranAneksu";
+import { EkranUmowy } from "./EkranUmowy";
+import { ListaUmow } from "./ListaUmow";
+import { UstawieniaUmow } from "./UstawieniaUmow";
+import "../oferty/oferty.css";
+import "./umowy.css";
 
+/** Moduł Umowy: lista, ekran umowy (skrócona forma, specyfikacja, płatności, aneksy), aneksy, ustawienia i szablony. */
 export function Umowy() {
   return (
-    <Zaslepka tytul="Umowy" faza="Generator Umów">
-      <ul>
-        <li>Umowa z zaakceptowanej oferty (kopia specyfikacji z listą różnic) albo od zera.</li>
-        <li>Skrócony formularz: dane, miejsce montażu, terminy, płatności wariant A/B, VAT, załączniki.</li>
-        <li>Aneksy, rejestr wpłat, protokół odbioru z saldem.</li>
-      </ul>
-    </Zaslepka>
+    <Routes>
+      <Route index element={<ListaUmow />} />
+      <Route path="ustawienia" element={<UstawieniaUmow />} />
+      <Route path="aneksy/:id" element={<EkranAneksu />} />
+      <Route path=":id" element={<EkranUmowy />} />
+    </Routes>
   );
 }

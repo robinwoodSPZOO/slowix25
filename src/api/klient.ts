@@ -29,6 +29,27 @@ import type {
   KonfliktPola,
   ZmianaCzesciowa,
 } from "./typy";
+import type {
+  DaneAneksu,
+  DaneUmowy,
+  Etap,
+  FiltrUmow,
+  OpisPola,
+  OsobaKontaktowa,
+  PelnaUmowa,
+  PelnyAneks,
+  PodgladPol,
+  RodzajSzablonu,
+  RozniceUmowy,
+  SposobWplaty,
+  StanSzablonu,
+  StatusAneksu,
+  StatusUmowy,
+  UmowaNaLiscie,
+  UstawieniaUmow,
+  WynikStatusu,
+  WynikStatusuAneksu,
+} from "./typyUmow";
 
 /** Błąd API: kod HTTP, komunikat po polsku i – dla 409/422 – szczegóły z treści odpowiedzi. */
 export class BladApi extends Error {
@@ -243,6 +264,78 @@ export class KlientApi {
       const nazwa = /filename="([^"]+)"/.exec(naglowek)?.[1] ?? `oferta.${format}`;
       return { nazwa, plik: await odp.blob() };
     },
+  };
+
+  // --- Faza 3: Generator Umów ---
+
+  /** Pobiera plik (dokument) jako Blob z nazwą z nagłówka Content-Disposition. */
+  private async plik(sciezka: string, domyslna: string) {
+    const odp = await this.surowe("GET", sciezka);
+    const naglowek = odp.headers.get("Content-Disposition") ?? "";
+    const nazwa = /filename="([^"]+)"/.exec(naglowek)?.[1] ?? domyslna;
+    return { nazwa, plik: await odp.blob() };
+  }
+
+  umowy = {
+    lista: (f: FiltrUmow = {}) => {
+      const q = new URLSearchParams();
+      if (f.status) q.set("status", f.status);
+      if (f.klient_id) q.set("klient_id", String(f.klient_id));
+      if (f.rok) q.set("rok", String(f.rok));
+      if (f.szukaj?.trim()) q.set("szukaj", f.szukaj.trim());
+      const qs = q.toString();
+      return this.zadanie<UmowaNaLiscie[]>("GET", `/umowy${qs ? `?${qs}` : ""}`);
+    },
+    dodaj: (d: { wersja_oferty_id?: number; klient_id?: number; data_zawarcia?: string | null }) =>
+      this.zadanie<PelnaUmowa>("POST", "/umowy", d),
+    pobierz: (id: number) => this.zadanie<PelnaUmowa>("GET", `/umowy/${id}`),
+    /** Zmiana częściowa pól formularza (+ `poprzednie` – wykrywanie konfliktów, 409). */
+    zmien: (id: number, d: ZmianaCzesciowa<DaneUmowy>) => this.zadanie<PelnaUmowa>("PUT", `/umowy/${id}`, d),
+    usun: (id: number) => this.zadanie<void>("DELETE", `/umowy/${id}`),
+    zmienStatus: (id: number, status: StatusUmowy, data?: string | null, powod?: string | null) =>
+      this.zadanie<WynikStatusu>("PUT", `/umowy/${id}/status`, { status, data: data ?? null, powod: powod ?? null }),
+    zapiszEtapy: (id: number, etapy: Etap[]) => this.zadanie<PelnaUmowa>("PUT", `/umowy/${id}/etapy`, { etapy }),
+    roznice: (id: number) => this.zadanie<RozniceUmowy>("GET", `/umowy/${id}/roznice`),
+    dodajWplate: (id: number, d: { data: string; kwota_gr: number; sposob: SposobWplaty | null; uwagi: string | null }) =>
+      this.zadanie<PelnaUmowa>("POST", `/umowy/${id}/wplaty`, d),
+    usunWplate: (wplataId: number) => this.zadanie<PelnaUmowa>("DELETE", `/wplaty/${wplataId}`),
+    zapiszProtokol: (id: number, d: { data: string; uwagi: string | null; bez_zastrzezen: boolean }) =>
+      this.zadanie<PelnaUmowa>("POST", `/umowy/${id}/protokol`, d),
+    polaDokumentu: (id: number) => this.zadanie<PodgladPol>("GET", `/umowy/${id}/dokument/pola`),
+    dokument: (id: number, format: "docx" | "pdf") => this.plik(`/umowy/${id}/dokument/${format}`, `umowa.${format}`),
+    protokol: (id: number, format: "docx" | "pdf") => this.plik(`/umowy/${id}/protokol/${format}`, `protokol.${format}`),
+    dodajAneks: (id: number) => this.zadanie<PelnyAneks>("POST", `/umowy/${id}/aneksy`),
+    ustawienia: () => this.zadanie<UstawieniaUmow>("GET", "/ustawienia/umowy"),
+    zapiszUstawienia: (u: UstawieniaUmow) => this.zadanie<UstawieniaUmow>("PUT", "/ustawienia/umowy", u),
+    osoby: (klientId: number) => this.zadanie<OsobaKontaktowa[]>("GET", `/klienci/${klientId}/osoby`),
+    zapiszOsoby: (klientId: number, osoby: OsobaKontaktowa[]) =>
+      this.zadanie<OsobaKontaktowa[]>("PUT", `/klienci/${klientId}/osoby`, { osoby }),
+  };
+
+  aneksy = {
+    pobierz: (id: number) => this.zadanie<PelnyAneks>("GET", `/aneksy/${id}`),
+    zmien: (id: number, d: ZmianaCzesciowa<DaneAneksu>) => this.zadanie<PelnyAneks>("PUT", `/aneksy/${id}`, d),
+    usun: (id: number) => this.zadanie<void>("DELETE", `/aneksy/${id}`),
+    zmienStatus: (id: number, status: StatusAneksu, data?: string | null) =>
+      this.zadanie<WynikStatusuAneksu>("PUT", `/aneksy/${id}/status`, { status, data: data ?? null }),
+    polaDokumentu: (id: number) => this.zadanie<PodgladPol>("GET", `/aneksy/${id}/dokument/pola`),
+    dokument: (id: number, format: "docx" | "pdf") => this.plik(`/aneksy/${id}/dokument/${format}`, `aneks.${format}`),
+  };
+
+  szablonyDokumentow = {
+    lista: () => this.zadanie<StanSzablonu[]>("GET", "/szablony-dokumentow"),
+    opisyPol: () => this.zadanie<OpisPola[]>("GET", "/szablony-dokumentow/pola"),
+    wgraj: async (rodzaj: RodzajSzablonu, plik: Blob, nazwa: string) => {
+      const odp = await this.surowe(
+        "PUT",
+        `/szablony-dokumentow/${rodzaj}?nazwa=${encodeURIComponent(nazwa)}`,
+        plik,
+        "application/octet-stream",
+      );
+      return (await odp.json()) as StanSzablonu;
+    },
+    usun: (rodzaj: RodzajSzablonu) => this.zadanie<StanSzablonu>("DELETE", `/szablony-dokumentow/${rodzaj}`),
+    plik: (rodzaj: RodzajSzablonu) => this.plik(`/szablony-dokumentow/${rodzaj}/plik`, `szablon-${rodzaj}.docx`),
   };
 
   /** Subskrypcja zdarzeń o zmianach (WebSocket); zwraca funkcję kończącą. Łączy się ponownie po zerwaniu. */

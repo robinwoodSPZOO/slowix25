@@ -45,8 +45,8 @@ export function UstawieniaOfert() {
       <Przycisk wariant="tekstowy" ikona={ArrowLeft} onClick={() => nawiguj("/oferty")}>
         Oferty
       </Przycisk>
-      <h1>Dane firmy w ofertach</h1>
-      <p className="pole__pomoc">Te dane trafiają do nagłówka „Wykonawca” w PDF i DOCX. Są zapisane w bazie na serwerze.</p>
+      <h1>Dane firmy w ofertach i umowach</h1>
+      <p className="pole__pomoc">Te dane trafiają do nagłówka „Wykonawca” w ofertach oraz do pól umowy ([wykonawca], [bank], [numer rachunku]…). Są zapisane w bazie na serwerze.</p>
       <form className="karta ustawienia-ofert__formularz" onSubmit={zapisz}>
         <Pole etykieta="Nazwa firmy" id="f-firma_nazwa">
           <input {...pole("firma_nazwa")} />
@@ -63,6 +63,17 @@ export function UstawieniaOfert() {
           </Pole>
           <Pole etykieta="E-mail" id="f-firma_email">
             <input type="email" {...pole("firma_email")} />
+          </Pole>
+        </div>
+        <div className="ustawienia-ofert__rzad">
+          <Pole etykieta="Bank (umowy)" id="f-firma_bank">
+            <input {...pole("firma_bank")} />
+          </Pole>
+          <Pole etykieta="Numer rachunku" id="f-firma_rachunek">
+            <input {...pole("firma_rachunek")} />
+          </Pole>
+          <Pole etykieta="SWIFT/BIC" id="f-firma_swift">
+            <input {...pole("firma_swift")} />
           </Pole>
         </div>
         <div className="ustawienia-ofert__rzad">

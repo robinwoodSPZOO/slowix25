@@ -426,6 +426,10 @@ export interface DaneFirmy {
   firma_email: string;
   oferta_waznosc_dni: number;
   oferta_termin_realizacji: string;
+  /** Dane do umów (Faza 3). */
+  firma_bank: string;
+  firma_rachunek: string;
+  firma_swift: string;
 }
 
 /** Podpowiedzi edytora: kod słownika → pozycje. */
