@@ -114,6 +114,15 @@ export function EkranOferty() {
     }
   };
 
+  const utworzUmowe = async () => {
+    try {
+      const u = await api.umowy.dodaj({ wersja_oferty_id: wersja.id });
+      nawiguj(`/umowy/${u.umowa.id}`);
+    } catch (e) {
+      ustawBlad((e as Error).message);
+    }
+  };
+
   const pobierz = async (format: "pdf" | "docx") => {
     if (dane.wycena.bledy.length > 0) {
       ustawBlad(`Nie można utworzyć dokumentu: ${dane.wycena.bledy.join("; ")}`);
@@ -195,7 +204,13 @@ export function EkranOferty() {
           <Przycisk ikona={Mail} disabled title="Wysyłka e-mail – w fazie Korespondencja">
             Wyślij e-mail
           </Przycisk>
-          <Przycisk wariant="glowny" ikona={FileSignature} disabled title="Tworzenie umowy z oferty – w fazie Generator Umów">
+          <Przycisk
+            wariant="glowny"
+            ikona={FileSignature}
+            disabled={!wersja.wyslano || oferta.status === "odrzucona" || oferta.klient_usuniety}
+            title={wersja.wyslano ? "Umowa z tej wersji: kopia specyfikacji, kwota z wyceny, klient i adres inwestycji" : "Umowę tworzy się z wersji wysłanej lub zaakceptowanej – zmień status oferty"}
+            onClick={() => void utworzUmowe()}
+          >
             Utwórz umowę
           </Przycisk>
         </div>

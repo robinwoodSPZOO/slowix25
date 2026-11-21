@@ -4,11 +4,15 @@
 //! wystawiane w sieci lokalnej. Używa go aplikacja okienkowa (tryb „serwer”) oraz
 //! samodzielny program `robinwood-serwer` (np. na mini PC bez interfejsu).
 
+pub mod aneksy;
 pub mod api;
 pub mod api_kalendarz;
 pub mod api_oferty;
+pub mod api_umowy;
 pub mod baza;
 pub mod bledy;
+pub mod docx_xml;
+pub mod dokument_umowy;
 pub mod eksport;
 pub mod firma;
 pub mod formaty;
@@ -17,13 +21,18 @@ pub mod klienci;
 pub mod limity;
 pub mod mdns;
 pub mod oferty;
+pub mod platnosci;
 pub mod pliki;
 pub mod roznice;
+pub mod slownie;
 pub mod slowniki;
 pub mod specyfikacje;
+pub mod szablon_docx;
 pub mod szablony;
 pub mod terminarz;
+pub mod umowy;
 pub mod wejscie;
+pub mod wplaty;
 pub mod wycena;
 pub mod zdarzenia;
 pub mod zmiany;

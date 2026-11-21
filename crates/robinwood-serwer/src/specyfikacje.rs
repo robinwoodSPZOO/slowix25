@@ -361,11 +361,13 @@ pub async fn wlasciciel(db: &mut SqliteConnection, spec_id: i64) -> Wynik<Option
             powod_blokady: powod,
         }));
     }
-    let umowa: Option<(i64, String, String)> =
-        sqlx::query_as("SELECT id, numer, status FROM umowy WHERE specyfikacja_id = ?1")
-            .bind(spec_id)
-            .fetch_optional(&mut *db)
-            .await?;
+    let umowa: Option<(i64, String, String)> = sqlx::query_as(
+        // umowa anulowana (Generator Umów, migracja 0006) – też tylko do odczytu
+        "SELECT id, numer, CASE WHEN anulowano IS NOT NULL THEN 'anulowana' ELSE status END FROM umowy WHERE specyfikacja_id = ?1",
+    )
+    .bind(spec_id)
+    .fetch_optional(&mut *db)
+    .await?;
     if let Some((uid, numer, status)) = umowa {
         return Ok(Some(Wlasciciel {
             rodzaj: "umowa".into(),

@@ -119,7 +119,7 @@ fn przygotuj_obraz(bajty: &[u8], podpis: Option<String>) -> Option<ObrazDok> {
     })
 }
 
-fn wiersz_dok(w: &Wiersz, agd: bool) -> WierszDok {
+pub fn wiersz_dok(w: &Wiersz, agd: bool) -> WierszDok {
     let status = match w.status.as_str() {
         "do_potwierdzenia" => Some("do potwierdzenia"),
         "po_stronie_klienta" => Some("po stronie klienta"),
