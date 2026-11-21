@@ -11,6 +11,7 @@ pub mod api_oferty;
 pub mod api_umowy;
 pub mod baza;
 pub mod bledy;
+pub mod docx_xml;
 pub mod dokument_umowy;
 pub mod eksport;
 pub mod firma;

@@ -907,7 +907,7 @@ pub fn stan(folder: &Path, rodzaj: &str) -> Wynik<StanSzablonu> {
     let meta = std::fs::read(katalog(folder).join(format!("{rodzaj}.json")))
         .ok()
         .and_then(|m| serde_json::from_slice(&m).ok());
-    let raport = szablon_docx::analizuj(&b, &wszystkie_klucze())?;
+    let raport = szablon_docx::analizuj(&b, &wszystkie_klucze(), &[])?;
     Ok(StanSzablonu {
         rodzaj: rodzaj.into(),
         zrodlo: if przykladowy { "przykladowy" } else { "wlasny" }.into(),
@@ -922,7 +922,7 @@ pub fn zapisz(folder: &Path, rodzaj: &str, nazwa: &str, bajty: &[u8]) -> Wynik<S
     if bajty.len() > 50 * 1024 * 1024 {
         return Err(BladApi::ZaDuzo("szablon może mieć najwyżej 50 MB".into()));
     }
-    szablon_docx::analizuj(bajty, &wszystkie_klucze())?;
+    szablon_docx::analizuj(bajty, &wszystkie_klucze(), &[])?;
     let k = katalog(folder);
     std::fs::create_dir_all(&k)
         .map_err(|e| BladApi::Wewnetrzny(format!("folder szablonów: {e}")))?;
@@ -1188,7 +1188,7 @@ mod testy {
     #[test]
     fn szablony_przykladowe_maja_wszystkie_pola() {
         let u = szablon_przykladowy_umowy().unwrap();
-        let r = szablon_docx::analizuj(&u, &wszystkie_klucze()).unwrap();
+        let r = szablon_docx::analizuj(&u, &wszystkie_klucze(), &[]).unwrap();
         assert!(r.nieznane.is_empty(), "{:?}", r.nieznane);
         for o in POLA
             .iter()
@@ -1203,7 +1203,7 @@ mod testy {
             );
         }
         let a = szablon_przykladowy_aneksu().unwrap();
-        let r = szablon_docx::analizuj(&a, &wszystkie_klucze()).unwrap();
+        let r = szablon_docx::analizuj(&a, &wszystkie_klucze(), &[]).unwrap();
         assert!(r.nieznane.is_empty(), "{:?}", r.nieznane);
         assert!(r.ostrzezenia.is_empty(), "{:?}", r.ostrzezenia);
     }

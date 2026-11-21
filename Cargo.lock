@@ -4040,6 +4040,7 @@ dependencies = [
  "image 0.23.14",
  "lopdf",
  "mdns-sd",
+ "quick-xml 0.41.0",
  "rand 0.8.8",
  "serde",
  "serde_json",

@@ -22,6 +22,7 @@ use std::io::{Cursor, Read, Write};
 use serde::Serialize;
 
 use crate::bledy::{BladApi, Wynik};
+use crate::docx_xml;
 
 /// Napis wstawiany w miejsce pola bez wartości (do uzupełnienia ręcznie).
 pub const PUSTE_POLE: &str = "………………";
@@ -79,6 +80,11 @@ pub struct RaportSzablonu {
     /// Kontrolki treści Worda rozpoznane po nazwie lub znaczniku i zastąpione wartością.
     pub kontrolki: usize,
     pub ostrzezenia: Vec<String>,
+    /// Błędy szablonu, przy których dokument NIE powstanie (np. niezamknięty blok, blok
+    /// przecinający tabelę, kontrolka obejmująca wiersz tabeli) – z opisem miejsca.
+    pub bledy: Vec<String>,
+    /// Pola wymagane w tym rodzaju dokumentu, których szablon nie zawiera (np. `[specyfikacja]`).
+    pub brak_wymaganych: Vec<String>,
 }
 
 fn dodaj_raz(v: &mut Vec<String>, s: &str) {
@@ -137,7 +143,8 @@ pub mod xml {
                 '"' => s.push_str("&quot;"),
                 '[' => s.push_str("&#91;"),
                 ']' => s.push_str("&#93;"),
-                c if (c as u32) < 0x20 && c != '\t' && c != '\n' => {}
+                // znaki niedozwolone w XML 1.0 (sterujące, U+FFFE, U+FFFF) są pomijane
+                c if !crate::docx_xml::znak_dozwolony(c) || c == '\r' => {}
                 c => s.push(c),
             }
         }
@@ -581,74 +588,234 @@ fn nazwa_warunku(znacznik: &str) -> Option<(bool, String)> {
     }
 }
 
-/// Usuwa znacznik: cały akapit, jeśli zawiera tylko znacznik, w przeciwnym razie sam tekst.
-fn usun_znacznik(x: &str, od: usize, do_: usize, zn: &str) -> String {
-    if let Some((ps, pe)) = akapit_wokol(x, od) {
-        if tekst_zakresu(x, ps, pe).trim() == zn.trim() && !x[ps..pe].contains("<w:sectPr") {
-            return format!("{}{}", &x[..ps], &x[pe..]);
-        }
-    }
-    format!("{}{}", &x[..od], &x[do_..])
+/// Znacznik bloku warunkowego w treści (`[[nazwa]]` / `[[/nazwa]]`).
+#[derive(Debug, Clone)]
+struct Znacznik {
+    /// Węzeł tekstu (dziecko `w:t`), w którym stoi znacznik.
+    wezel: usize,
+    od: usize,
+    do_: usize,
+    nazwa: String,
+    zamkniecie: bool,
 }
 
-/// Krok 2: bloki warunkowe `[[nazwa]] … [[/nazwa]]`.
-fn bloki_warunkowe(mut x: String, dane: &DaneSzablonu, r: &mut RaportSzablonu) -> String {
-    let mut od = 0;
-    for _ in 0..10_000 {
-        let Some((s1, e1, zn1)) = znajdz_znacznik(&x, od, &|t| t.starts_with("[[")) else {
-            break;
-        };
-        let Some((zamkniecie, nazwa)) = nazwa_warunku(&zn1) else {
-            od = e1;
-            continue;
-        };
-        if zamkniecie {
-            r.ostrzezenia.push(format!(
-                "znacznik końca „{zn1}” bez znacznika początku – usunięty"
-            ));
-            x = usun_znacznik(&x, s1, e1, &zn1);
+fn znaczniki(d: &docx_xml::Drzewo, x: &str) -> Vec<Znacznik> {
+    let mut w = Vec::new();
+    for t in d.wszystkie("w:t") {
+        for &c in &d.w(t).dzieci {
+            let n = d.w(c);
+            if !n.tekst() {
+                continue;
+            }
+            let s = &x[n.od..n.do_];
+            for (a, b) in zakresy_pol(s) {
+                if !s[a..b].starts_with("[[") {
+                    continue;
+                }
+                if let Some((z, nazwa)) = nazwa_warunku(&s[a..b]) {
+                    w.push(Znacznik {
+                        wezel: c,
+                        od: n.od + a,
+                        do_: n.od + b,
+                        nazwa,
+                        zamkniecie: z,
+                    });
+                }
+            }
+        }
+    }
+    w
+}
+
+/// „ (akapit „…”)” – miejsce w dokumencie, żeby użytkownik znalazł je w Wordzie.
+fn miejsce(d: &docx_xml::Drzewo, x: &str, wezel: usize) -> String {
+    let t = d
+        .przodek(wezel, "w:p")
+        .map(|p| docx_xml::tekst_elementu(d, x, p))
+        .unwrap_or_default();
+    let t: String = t.trim().chars().take(70).collect();
+    if t.is_empty() {
+        String::new()
+    } else {
+        format!(" (akapit „{t}”)")
+    }
+}
+
+/// Pary znaczników (indeksy w liście) albo opis błędu struktury bloków.
+fn pary_znacznikow(
+    d: &docx_xml::Drzewo,
+    x: &str,
+    zn: &[Znacznik],
+    dane: &DaneSzablonu,
+) -> Result<Vec<(usize, usize)>, String> {
+    let mut stos: Vec<usize> = Vec::new();
+    let mut pary = Vec::new();
+    for (i, z) in zn.iter().enumerate() {
+        if !z.zamkniecie {
+            stos.push(i);
             continue;
         }
-        dodaj_raz(&mut r.bloki_warunkowe, &nazwa);
-        let klucz = dane.klucz(&nazwa);
-        let koniec = znajdz_znacznik(&x, e1, &|t| {
-            nazwa_warunku(t).is_some_and(|(z, n)| z && dane.klucz(&n) == klucz)
-        });
-        let Some((s2, e2, zn2)) = koniec else {
-            r.ostrzezenia.push(format!(
-                "blok „{zn1}” nie ma znacznika końca „[[/{nazwa}]]” – znacznik usunięty, treść zostaje"
-            ));
-            x = usun_znacznik(&x, s1, e1, &zn1);
-            continue;
+        let k = dane.klucz(&z.nazwa);
+        match stos.iter().rposition(|&o| dane.klucz(&zn[o].nazwa) == k) {
+            Some(p) if p + 1 == stos.len() => {
+                pary.push((stos.pop().unwrap_or(0), i));
+            }
+            Some(_) => {
+                let wewn = &zn[stos[stos.len() - 1]];
+                return Err(format!(
+                    "bloki [[{}]] i [[{}]] zachodzą na siebie – najpierw zamknij [[/{}]]{}",
+                    z.nazwa,
+                    wewn.nazwa,
+                    wewn.nazwa,
+                    miejsce(d, x, z.wezel)
+                ));
+            }
+            None => return Err(format!(
+                "znacznik końca [[/{}]] bez znacznika początku [[{}]] (albo w złej kolejności){}",
+                z.nazwa,
+                z.nazwa,
+                miejsce(d, x, z.wezel)
+            )),
+        }
+    }
+    if let Some(&o) = stos.first() {
+        return Err(format!(
+            "blok [[{}]] nie ma znacznika końca [[/{}]]{}",
+            zn[o].nazwa,
+            zn[o].nazwa,
+            miejsce(d, x, zn[o].wezel)
+        ));
+    }
+    Ok(pary)
+}
+
+/// Krok 2: bloki warunkowe `[[nazwa]] … [[/nazwa]]`. Gdy warunek jest fałszywy, usuwana jest
+/// WYŁĄCZNIE treść między znacznikami ([`docx_xml::usun_zakres`]) – tekst przed znacznikiem
+/// początku i po znaczniku końca w tych samych akapitach zostaje. Gdy bezpieczne usunięcie
+/// nie jest możliwe (blok niezamknięty, przeplatany, przecinający tabelę lub pole), tryb ścisły
+/// zwraca błąd z miejscem, a tryb analizy zapisuje go w `r.bledy`.
+fn bloki_warunkowe(
+    mut x: String,
+    dane: &DaneSzablonu,
+    r: &mut RaportSzablonu,
+    o: &Opcje,
+) -> Wynik<String> {
+    let blad = |m: String| BladApi::NieprawidloweDane(format!("szablon: {m}"));
+    for _ in 0..2_000 {
+        let d = docx_xml::parsuj(&x).map_err(|e| blad(format!("niepoprawny XML – {e}")))?;
+        let zn = znaczniki(&d, &x);
+        if zn.is_empty() {
+            break;
+        }
+        let pary = match pary_znacznikow(&d, &x, &zn, dane) {
+            Ok(p) => p,
+            Err(m) => {
+                if o.scisly {
+                    return Err(blad(m));
+                }
+                dodaj_raz(&mut r.bledy, &m);
+                // analiza: zdejmujemy same znaczniki, żeby zebrać pola z reszty
+                let e = zn
+                    .iter()
+                    .map(|z| docx_xml::Edycja::usun(z.od, z.do_))
+                    .collect();
+                x = docx_xml::zastosuj(&x, e).map_err(blad)?;
+                break;
+            }
         };
+        if o.analiza {
+            // ostrzeżenia o znacznikach dzielących akapit z innym tekstem (Shift+Enter)
+            for z in &zn {
+                if let Some(p) = d.przodek(z.wezel, "w:p") {
+                    let t = docx_xml::tekst_elementu(&d, &x, p);
+                    let znak = xml::unescape(&x[z.od..z.do_]);
+                    if t.trim() != znak.trim() {
+                        dodaj_raz(
+                            &mut r.ostrzezenia,
+                            &format!(
+                                "znacznik {znak} dzieli akapit z innym tekstem – zalecany osobny akapit (Enter, nie Shift+Enter){}",
+                                miejsce(&d, &x, z.wezel)
+                            ),
+                        );
+                    }
+                }
+            }
+            // bezpieczeństwo usunięcia sprawdzamy dla każdej pary (bez zmiany dokumentu)
+            for &(a, b) in &pary {
+                let (za, zb) = (&zn[a], &zn[b]);
+                if let Err(m) = docx_xml::usun_zakres(&d, &x, (za.wezel, za.od), (zb.wezel, zb.do_))
+                {
+                    dodaj_raz(
+                        &mut r.bledy,
+                        &format!("blok [[{}]]: {m}{}", za.nazwa, miejsce(&d, &x, za.wezel)),
+                    );
+                }
+            }
+        }
+        // najbardziej wewnętrzna para: znaczniki sąsiadują na liście
+        let Some(&(a, b)) = pary.iter().find(|(a, b)| b == &(a + 1)) else {
+            break;
+        };
+        let (za, zb) = (zn[a].clone(), zn[b].clone());
+        dodaj_raz(&mut r.bloki_warunkowe, &za.nazwa);
+        let klucz = dane.klucz(&za.nazwa);
         let dolacz = match dane.warunki.get(&klucz) {
             Some(t) => *t,
             None => {
-                r.ostrzezenia.push(format!(
-                    "nieznany blok warunkowy „{nazwa}” – treść zostaje w dokumencie"
-                ));
+                dodaj_raz(
+                    &mut r.ostrzezenia,
+                    &format!(
+                        "nieznany blok warunkowy „{}” – treść zostaje w dokumencie",
+                        za.nazwa
+                    ),
+                );
                 true
             }
         };
-        if !dolacz {
-            let p1 = akapit_wokol(&x, s1);
-            let p2 = akapit_wokol(&x, s2);
-            if let (Some((ps, _)), Some((_, pe))) = (p1, p2) {
-                if zrownowazony(&x[ps..pe]) {
-                    x = format!("{}{}", &x[..ps], &x[pe..]);
-                    od = ps;
-                    continue;
+        let wynik = if dolacz {
+            // zostaje treść, znikają same znaczniki (najpierw końcowy – pozycje początku bez zmian)
+            docx_xml::usun_zakres(&d, &x, (zb.wezel, zb.od), (zb.wezel, zb.do_))
+                .and_then(|e| docx_xml::zastosuj(&x, e))
+                .and_then(|x2| {
+                    let d2 = docx_xml::parsuj(&x2)?;
+                    let z2 = znaczniki(&d2, &x2);
+                    let p = z2
+                        .iter()
+                        .find(|z| z.od == za.od)
+                        .ok_or("wewnętrzny błąd – zgubiony znacznik")?;
+                    let e = docx_xml::usun_zakres(&d2, &x2, (p.wezel, p.od), (p.wezel, p.do_))?;
+                    docx_xml::zastosuj(&x2, e)
+                })
+        } else {
+            docx_xml::usun_zakres(&d, &x, (za.wezel, za.od), (zb.wezel, zb.do_))
+                .and_then(|e| docx_xml::zastosuj(&x, e))
+        };
+        match wynik {
+            Ok(n) => x = n,
+            Err(m) => {
+                let m = format!(
+                    "blok [[{}]] nie może zostać bezpiecznie {}: {m}{}",
+                    za.nazwa,
+                    if dolacz {
+                        "oczyszczony ze znaczników"
+                    } else {
+                        "usunięty"
+                    },
+                    miejsce(&d, &x, za.wezel)
+                );
+                if o.scisly {
+                    return Err(blad(m));
                 }
+                dodaj_raz(&mut r.bledy, &m);
+                let e = vec![
+                    docx_xml::Edycja::usun(za.od, za.do_),
+                    docx_xml::Edycja::usun(zb.od, zb.do_),
+                ];
+                x = docx_xml::zastosuj(&x, e).map_err(blad)?;
             }
-            r.ostrzezenia.push(format!(
-                "blok „{nazwa}” zaczyna się i kończy w różnych miejscach struktury dokumentu (np. w tabeli) – nie można go usunąć, usunięto tylko znaczniki"
-            ));
         }
-        x = usun_znacznik(&x, s2, e2, &zn2);
-        x = usun_znacznik(&x, s1, e1, &zn1);
-        od = s1.min(x.len());
     }
-    x
+    Ok(x)
 }
 
 /// Wycina z treści dokumentu tylko zawartość bloku `[[nazwa]]…[[/nazwa]]` (np. protokół
@@ -831,39 +998,6 @@ fn wstaw_bloki(mut x: String, dane: &DaneSzablonu, r: &mut RaportSzablonu, glown
     x
 }
 
-/// Wartość atrybutu `w:val` elementu `<w:{el} …/>` w fragmencie.
-fn wartosc_atrybutu(f: &str, el: &str) -> Option<String> {
-    let i = f.find(&format!("<w:{el} "))?;
-    let reszta = &f[i..];
-    let k = reszta.find("/>").or_else(|| reszta.find('>'))?;
-    let tag = &reszta[..k];
-    let a = tag.find("w:val=\"")? + 7;
-    let b = tag[a..].find('"')?;
-    Some(xml::unescape(&tag[a..a + b]))
-}
-
-/// Koniec elementu `<w:sdt>` zaczynającego się w `od` (z uwzględnieniem zagnieżdżeń).
-fn koniec_sdt(x: &str, od: usize) -> Option<usize> {
-    let mut glebokosc = 0i32;
-    let mut i = od;
-    while i < x.len() {
-        let r = &x[i..];
-        if r.starts_with("<w:sdt>") || r.starts_with("<w:sdt ") {
-            glebokosc += 1;
-            i += 6;
-        } else if r.starts_with("</w:sdt>") {
-            glebokosc -= 1;
-            i += 8;
-            if glebokosc == 0 {
-                return Some(i);
-            }
-        } else {
-            i += r.find('<').filter(|&k| k > 0).unwrap_or(1);
-        }
-    }
-    None
-}
-
 fn przebiegi_wartosci(rpr: &str, wartosc: &str) -> String {
     let linie: Vec<String> = wartosc.split('\n').map(xml::escape).collect();
     format!(
@@ -872,68 +1006,99 @@ fn przebiegi_wartosci(rpr: &str, wartosc: &str) -> String {
     )
 }
 
+/// Poziom kontrolki treści – wynika z rodzica elementu `w:sdt`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PoziomKontrolki {
+    /// W akapicie (zawiera przebiegi).
+    Wiersza,
+    /// Akapity / tabele w treści, komórce, nagłówku.
+    Blokowa,
+    /// Obejmuje komórki (rodzic `w:tr`).
+    Komorkowa,
+    /// Obejmuje wiersze tabeli (rodzic `w:tbl`).
+    Wierszowa,
+}
+
 /// Krok 0: kontrolki treści Worda (`w:sdt`) z nazwą (`w:alias`) albo znacznikiem (`w:tag`)
 /// odpowiadającym polu – cała kontrolka jest zastępowana wartością (formatowanie z pierwszego
-/// przebiegu). Dzięki temu znika też powiązanie z danymi XML (`w:dataBinding`), które przy
-/// otwarciu w Wordzie przywróciłoby treść z szablonu.
-fn kontrolki_tresci(x: &str, dane: &DaneSzablonu, r: &mut RaportSzablonu, glowna: bool) -> String {
-    let mut wynik = String::with_capacity(x.len());
-    let mut poz = 0;
-    loop {
-        let a = x[poz..].find("<w:sdt>");
-        let b = x[poz..].find("<w:sdt ");
-        let start = match (a, b) {
-            (Some(a), Some(b)) => poz + a.min(b),
-            (Some(a), None) => poz + a,
-            (None, Some(b)) => poz + b,
-            (None, None) => break,
+/// przebiegu). Dzięki temu znika też powiązanie z danymi XML (`w:dataBinding`).
+///
+/// Poziomy: w akapicie → przebiegi; blokowa → akapit / tabela (w komórce zawsze zakończona
+/// akapitem); obejmująca komórki lub wiersze tabeli → odmowa z komunikatem (wartości nie da się
+/// tam wstawić bez zepsucia tabeli). Nieznane kontrolki zostają bez zmian.
+fn kontrolki_tresci(
+    x: &str,
+    dane: &DaneSzablonu,
+    r: &mut RaportSzablonu,
+    glowna: bool,
+    o: &Opcje,
+) -> Wynik<String> {
+    let blad = |m: String| BladApi::NieprawidloweDane(format!("szablon: {m}"));
+    let d = docx_xml::parsuj(x).map_err(|e| blad(format!("niepoprawny XML – {e}")))?;
+    let mut edycje = Vec::new();
+    let mut zajete: Vec<(usize, usize)> = Vec::new();
+    for i in d.wszystkie("w:sdt") {
+        let w = d.w(i);
+        if zajete.iter().any(|(a, b)| w.od >= *a && w.do_ <= *b) {
+            continue;
+        }
+        let Some(pr) = d.dziecko(i, "w:sdtPr") else {
+            continue;
         };
-        let Some(koniec) = koniec_sdt(x, start) else {
-            break;
-        };
-        let sdt = &x[start..koniec];
-        let pr_do = sdt.find("</w:sdtPr>").unwrap_or(0);
-        let pr = &sdt[..pr_do];
         let mut klucz = None;
         let mut nazwa = String::new();
-        for kandydat in [wartosc_atrybutu(pr, "alias"), wartosc_atrybutu(pr, "tag")]
-            .into_iter()
-            .flatten()
-        {
-            let k = dane.klucz(&kandydat);
+        for el in ["w:alias", "w:tag"] {
+            let Some(v) = d
+                .dziecko(pr, el)
+                .and_then(|e| d.atrybut(x, e, "w:val"))
+                .map(xml::unescape)
+            else {
+                continue;
+            };
+            let k = dane.klucz(&v);
             if dane.pola.contains_key(&k) || dane.bloki.contains_key(&k) {
-                nazwa = kandydat;
+                nazwa = v;
                 klucz = Some(k);
                 break;
             }
         }
-        let Some(klucz) = klucz else {
-            // nieznana kontrolka – zostaje; szukamy dalej wewnątrz niej
-            wynik.push_str(&x[poz..start + 6]);
-            poz = start + 6;
-            continue;
+        let Some(klucz) = klucz else { continue };
+        let rodzic = w.rodzic.unwrap_or(0);
+        let poziom = match d.w(rodzic).nazwa.as_str() {
+            "w:tbl" => PoziomKontrolki::Wierszowa,
+            "w:tr" => PoziomKontrolki::Komorkowa,
+            _ if d.przodek(rodzic, "w:p").is_some() => PoziomKontrolki::Wiersza,
+            _ => PoziomKontrolki::Blokowa,
         };
-        let tresc = sdt
-            .find("<w:sdtContent>")
-            .map(|i| {
-                let od = i + 14;
-                let do_ = sdt.rfind("</w:sdtContent>").unwrap_or(sdt.len());
-                &sdt[od..do_.max(od)]
-            })
+        if matches!(
+            poziom,
+            PoziomKontrolki::Wierszowa | PoziomKontrolki::Komorkowa
+        ) {
+            let m = format!(
+                "kontrolka treści „{nazwa}” obejmuje {} tabeli – wartości nie można tam wstawić. Usuń kontrolkę (Deweloper → Właściwości → usuń) i wpisz w komórce pole [{nazwa}] albo wstaw kontrolkę wewnątrz akapitu komórki{}",
+                if poziom == PoziomKontrolki::Wierszowa { "cały wiersz" } else { "całą komórkę" },
+                miejsce(&d, x, i)
+            );
+            if o.scisly {
+                return Err(blad(m));
+            }
+            dodaj_raz(&mut r.bledy, &m);
+            continue;
+        }
+        let tresc = d
+            .dziecko(i, "w:sdtContent")
+            .map(|c| &x[d.w(c).otw_do..d.w(c).zam_od.max(d.w(c).otw_do)])
             .unwrap_or("");
-        let blokowa =
-            tresc.contains("<w:p>") || tresc.contains("<w:p ") || tresc.contains("<w:tbl>");
         let rpr = tresc
             .find("<w:rPr>")
-            .and_then(|i| tresc[i..].find("</w:rPr>").map(|k| &tresc[i..i + k + 8]))
+            .and_then(|a| tresc[a..].find("</w:rPr>").map(|k| &tresc[a..a + k + 8]))
             .unwrap_or("");
         let nowy = if let Some(blok) = dane.bloki.get(&klucz) {
-            if !blokowa || !glowna {
-                r.ostrzezenia.push(format!(
-                    "kontrolka „{nazwa}” musi obejmować cały akapit, aby wstawić w niej tabelę – pominięto"
-                ));
-                wynik.push_str(&x[poz..koniec]);
-                poz = koniec;
+            if poziom == PoziomKontrolki::Wiersza || !glowna {
+                dodaj_raz(
+                    &mut r.ostrzezenia,
+                    &format!("kontrolka „{nazwa}” musi obejmować cały akapit, aby wstawić w niej tabelę – pominięto"),
+                );
                 continue;
             }
             match wciecie(tresc) {
@@ -941,32 +1106,49 @@ fn kontrolki_tresci(x: &str, dane: &DaneSzablonu, r: &mut RaportSzablonu, glowna
                 None => blok.clone(),
             }
         } else {
-            let w = &dane.pola[&klucz];
-            let w = if w.trim().is_empty() {
+            let wart = &dane.pola[&klucz];
+            let wart = if wart.trim().is_empty() {
                 dodaj_raz(&mut r.puste, nazwa.trim());
                 PUSTE_POLE.to_string()
             } else {
-                w.clone()
+                wart.clone()
             };
-            let przebiegi = przebiegi_wartosci(rpr, &w);
-            if blokowa {
+            let przebiegi = przebiegi_wartosci(rpr, &wart);
+            if poziom == PoziomKontrolki::Blokowa {
                 let ppr = tresc
                     .find("<w:pPr>")
-                    .and_then(|i| tresc[i..].find("</w:pPr>").map(|k| &tresc[i..i + k + 8]))
+                    .and_then(|a| tresc[a..].find("</w:pPr>").map(|k| &tresc[a..a + k + 8]))
                     .unwrap_or("");
                 format!("<w:p>{ppr}{przebiegi}</w:p>")
             } else {
                 przebiegi
             }
         };
+        let mut nowy = nowy;
+        // komórka tabeli musi kończyć się akapitem
+        if poziom == PoziomKontrolki::Blokowa && d.w(rodzic).nazwa == "w:tc" {
+            let dz = &d.w(rodzic).dzieci;
+            let poz = dz.iter().position(|c| *c == i).unwrap_or(0);
+            let ostatni = !dz[poz + 1..]
+                .iter()
+                .any(|c| matches!(d.w(*c).nazwa.as_str(), "w:p" | "w:tbl" | "w:sdt"));
+            if ostatni
+                && !nowy.trim_end().ends_with("</w:p>")
+                && !nowy.trim_end().ends_with("<w:p/>")
+            {
+                nowy.push_str("<w:p/>");
+            }
+        }
         dodaj_raz(&mut r.pola, nazwa.trim());
         r.kontrolki += 1;
-        wynik.push_str(&x[poz..start]);
-        wynik.push_str(&nowy);
-        poz = koniec;
+        zajete.push((w.od, w.do_));
+        edycje.push(docx_xml::Edycja {
+            od: w.od,
+            do_: w.do_,
+            nowe: nowy,
+        });
     }
-    wynik.push_str(&x[poz..]);
-    wynik
+    docx_xml::zastosuj(x, edycje).map_err(blad)
 }
 
 /// Krok 4: pola tekstowe.
@@ -1041,30 +1223,463 @@ fn blad_pliku(e: impl std::fmt::Display) -> BladApi {
     ))
 }
 
-/// Części pakietu (nazwa, treść) w kolejności z archiwum.
+/// Limit danych po rozpakowaniu szablonu (liczony z faktycznie odczytanych bajtów).
+pub const MAKS_ROZPAKOWANE: u64 = 200 * 1024 * 1024;
+/// Limit liczby plików w pakiecie.
+pub const MAKS_WPISOW: usize = 2_000;
+
+fn bezpieczna_nazwa(n: &str) -> bool {
+    !n.is_empty()
+        && !n.starts_with('/')
+        && !n.starts_with('\\')
+        && !n.contains('\\')
+        && !n.contains(':')
+        && !n.split('/').any(|c| c == ".." || c == ".")
+        && !n.contains('\0')
+}
+
+/// Części pakietu (nazwa, treść) w kolejności z archiwum. Rozmiar liczony z faktycznie
+/// odczytanych bajtów (strumieniowo, z twardym limitem – zadeklarowany rozmiar w archiwum
+/// można sfałszować), limit liczby wpisów, odrzucane ścieżki z `..` i bezwzględne.
 pub fn rozpakuj(docx: &[u8]) -> Wynik<Vec<(String, Vec<u8>)>> {
     let mut arch = zip::ZipArchive::new(Cursor::new(docx)).map_err(blad_pliku)?;
+    if arch.len() > MAKS_WPISOW {
+        return Err(BladApi::ZaDuzo(format!(
+            "szablon zawiera zbyt wiele plików ({}; najwyżej {MAKS_WPISOW})",
+            arch.len()
+        )));
+    }
     let mut wynik = Vec::with_capacity(arch.len());
     let mut lacznie: u64 = 0;
     for i in 0..arch.len() {
-        let mut p = arch.by_index(i).map_err(blad_pliku)?;
+        let p = arch.by_index(i).map_err(blad_pliku)?;
+        let nazwa = p.name().to_string();
+        if !bezpieczna_nazwa(&nazwa) {
+            return Err(blad_pliku(format!(
+                "niedozwolona ścieżka w archiwum „{nazwa}”"
+            )));
+        }
         if p.is_dir() {
             continue;
         }
-        lacznie += p.size();
-        if lacznie > 200 * 1024 * 1024 {
+        let zostalo = MAKS_ROZPAKOWANE - lacznie;
+        let mut b = Vec::new();
+        let n = p
+            .take(zostalo + 1)
+            .read_to_end(&mut b)
+            .map_err(blad_pliku)? as u64;
+        lacznie += n;
+        if lacznie > MAKS_ROZPAKOWANE {
             return Err(BladApi::ZaDuzo(
                 "szablon po rozpakowaniu przekracza 200 MB".into(),
             ));
         }
-        let mut b = Vec::with_capacity(p.size() as usize);
-        p.read_to_end(&mut b).map_err(blad_pliku)?;
-        wynik.push((p.name().to_string(), b));
+        wynik.push((nazwa, b));
     }
     if !wynik.iter().any(|(n, _)| n == "word/document.xml") {
         return Err(blad_pliku("brak word/document.xml"));
     }
     Ok(wynik)
+}
+
+/// Plik relacji danej części (`word/document.xml` → `word/_rels/document.xml.rels`).
+pub fn plik_relacji(czesc: &str) -> String {
+    match czesc.rsplit_once('/') {
+        Some((k, n)) => format!("{k}/_rels/{n}.rels"),
+        None => format!("_rels/{czesc}.rels"),
+    }
+}
+
+/// Relacje z pliku `.rels`: (od, do_, Id, Type, Target, zewnętrzna).
+fn relacje(x: &str) -> Vec<(usize, usize, String, String, String, bool)> {
+    let Ok(d) = docx_xml::parsuj(x) else {
+        return vec![];
+    };
+    d.wszystkie("Relationship")
+        .into_iter()
+        .map(|i| {
+            let a = |n: &str| d.atrybut(x, i, n).unwrap_or("").to_string();
+            (
+                d.w(i).od,
+                d.w(i).do_,
+                a("Id"),
+                a("Type"),
+                xml::unescape(&a("Target")),
+                a("TargetMode") == "External",
+            )
+        })
+        .collect()
+}
+
+fn tekst_czesci(czesci: &[(String, Vec<u8>)], nazwa: &str) -> Option<String> {
+    czesci
+        .iter()
+        .find(|(n, _)| n == nazwa)
+        .map(|(_, b)| String::from_utf8_lossy(b).into_owned())
+}
+
+fn ustaw_czesc(czesci: &mut [(String, Vec<u8>)], nazwa: &str, t: String) {
+    if let Some(c) = czesci.iter_mut().find(|(n, _)| n == nazwa) {
+        c.1 = t.into_bytes();
+    }
+}
+
+/// Oczyszczenie pakietu: makra (`.docm`), kontrolki ActiveX, dołączony szablon
+/// (`attachedTemplate`) i odnośniki do plików lokalnych/sieciowych. Wynik to czysty `.docx`.
+/// Odwołania zewnętrzne inne niż odnośniki WWW/e-mail (połączone obrazy, obiekty, ramki) →
+/// odmowa z instrukcją.
+fn oczysc_pakiet(czesci: &mut Vec<(String, Vec<u8>)>, r: &mut RaportSzablonu) -> Wynik<()> {
+    if bez_makr(czesci) {
+        dodaj_raz(
+            &mut r.ostrzezenia,
+            "szablon zawierał makra (.docm) – w dokumencie zostały usunięte",
+        );
+    }
+    // ActiveX: części, relacje, typy i odwołania w treści
+    let przed = czesci.len();
+    czesci.retain(|(n, _)| !n.starts_with("word/activeX/"));
+    let mut activex = przed - czesci.len();
+    let nazwy: Vec<String> = czesci.iter().map(|(n, _)| n.clone()).collect();
+    for n in &nazwy {
+        if n.ends_with(".rels") {
+            let t = tekst_czesci(czesci, n).unwrap_or_default();
+            let mut e = Vec::new();
+            for (od, do_, _, typ, cel, zewn) in relacje(&t) {
+                let ax = typ.ends_with("/control")
+                    || typ.contains("activeX")
+                    || cel.contains("activeX/");
+                let szablon = typ.ends_with("/attachedTemplate");
+                if ax || szablon {
+                    e.push(docx_xml::Edycja::usun(od, do_));
+                    if szablon {
+                        dodaj_raz(
+                            &mut r.ostrzezenia,
+                            "usunięto powiązanie z szablonem Worda (attachedTemplate) – dokument nie odwołuje się do plików na dysku",
+                        );
+                    }
+                    continue;
+                }
+                if zewn {
+                    let www = ["http://", "https://", "mailto:"]
+                        .iter()
+                        .any(|p| cel.to_lowercase().starts_with(p));
+                    if !(www && typ.ends_with("/hyperlink")) {
+                        return Err(BladApi::NieprawidloweDane(format!(
+                            "szablon zawiera odwołanie do pliku zewnętrznego „{cel}” ({}) – w Wordzie zamień połączony obraz/obiekt/odnośnik na osadzony (Plik → Informacje → Edytuj łącza do plików → Przerwij łącze) i wgraj szablon ponownie",
+                            typ.rsplit('/').next().unwrap_or("relacja")
+                        )));
+                    }
+                }
+            }
+            if !e.is_empty() {
+                let t2 = docx_xml::zastosuj(&t, e).map_err(BladApi::Wewnetrzny)?;
+                ustaw_czesc(czesci, n, t2);
+            }
+        } else if n == "[Content_Types].xml" {
+            let t = tekst_czesci(czesci, n).unwrap_or_default();
+            let t2 = usun_elementy(&t, "Override", &["/word/activeX/"]);
+            let t2 = usun_elementy(&t2, "Default", &["activeX"]);
+            if t2 != t {
+                ustaw_czesc(czesci, n, t2);
+            }
+        } else if n == "word/settings.xml" {
+            let t = tekst_czesci(czesci, n).unwrap_or_default();
+            let t2 = usun_elementy(&t, "w:attachedTemplate", &[""]);
+            if t2 != t {
+                ustaw_czesc(czesci, n, t2);
+            }
+        }
+    }
+    for n in &nazwy {
+        if !czesc_z_polami(n) {
+            continue;
+        }
+        let t = tekst_czesci(czesci, n).unwrap_or_default();
+        if !t.contains("<w:control") {
+            continue;
+        }
+        let d = docx_xml::parsuj(&t).map_err(|e| {
+            BladApi::NieprawidloweDane(format!("szablon: {n}: niepoprawny XML – {e}"))
+        })?;
+        let mut e = Vec::new();
+        let mut zajete: Vec<(usize, usize)> = Vec::new();
+        for c in d.wszystkie("w:control") {
+            let cel = d.przodek(c, "w:object").unwrap_or(c);
+            let w = d.w(cel);
+            if zajete.iter().any(|(a, b)| w.od >= *a && w.do_ <= *b) {
+                continue;
+            }
+            zajete.push((w.od, w.do_));
+            e.push(docx_xml::Edycja::usun(w.od, w.do_));
+        }
+        activex += e.len();
+        let t2 = docx_xml::zastosuj(&t, e).map_err(BladApi::Wewnetrzny)?;
+        ustaw_czesc(czesci, n, t2);
+    }
+    if activex > 0 {
+        dodaj_raz(
+            &mut r.ostrzezenia,
+            "szablon zawierał kontrolki ActiveX (np. przycisk formularza) – zostały usunięte z dokumentu",
+        );
+    }
+    // odnośniki w treści do usuniętych relacji (np. hiperłącze do pliku) – bez r:id
+    Ok(())
+}
+
+/// Identyfikatory relacji części.
+fn id_relacji(czesci: &[(String, Vec<u8>)], czesc: &str) -> std::collections::BTreeSet<String> {
+    tekst_czesci(czesci, &plik_relacji(czesc))
+        .map(|t| relacje(&t).into_iter().map(|r| r.2).collect())
+        .unwrap_or_default()
+}
+
+/// Walidator wyniku: każda część XML poprawna, części z treścią – poprawna struktura
+/// (komórki zakończone akapitem, dozwolone dzieci, istniejące relacje). Błąd = komunikat.
+pub fn sprawdz_pakiet(czesci: &[(String, Vec<u8>)]) -> Result<(), String> {
+    for (n, b) in czesci {
+        if !(n.ends_with(".xml") || n.ends_with(".rels")) {
+            continue;
+        }
+        let t = std::str::from_utf8(b).map_err(|_| format!("{n}: nieprawidłowe kodowanie"))?;
+        if czesc_z_polami(n) {
+            let rel = id_relacji(czesci, n);
+            docx_xml::sprawdz_czesc(n, t, Some(&rel))?;
+        } else {
+            docx_xml::parsuj(t).map_err(|e| format!("{n}: niepoprawny XML – {e}"))?;
+        }
+    }
+    if !czesci.iter().any(|(n, _)| n == "[Content_Types].xml") {
+        return Err("brak [Content_Types].xml".into());
+    }
+    Ok(())
+}
+
+/// Akapit informacyjny (czerwony, pogrubiony, wyśrodkowany).
+fn akapit_informacyjny(t: &str, rozmiar: u32) -> String {
+    format!(
+        "<w:p><w:pPr><w:jc w:val=\"center\"/><w:spacing w:before=\"0\" w:after=\"80\"/></w:pPr><w:r><w:rPr><w:b/><w:color w:val=\"C00000\"/><w:sz w:val=\"{rozmiar}\"/><w:szCs w:val=\"{rozmiar}\"/></w:rPr><w:t xml:space=\"preserve\">{}</w:t></w:r></w:p>",
+        xml::escape(t)
+    )
+}
+
+const ID_NAGLOWKA: &str = "rIdRobinwoodNaglowek";
+
+/// Oznaczenie dokumentu (np. „PROJEKT – NIE DO PODPISU”, „TEKST JEDNOLITY…”): akapity na
+/// początku treści i wiersz w nagłówku każdej strony (istniejące nagłówki dostają akapit na
+/// początku; dokument bez nagłówka dostaje nowy).
+fn oznacz_dokument(czesci: &mut Vec<(String, Vec<u8>)>, n: &Naglowek) -> Wynik<()> {
+    let blad = |e: String| BladApi::Wewnetrzny(format!("oznaczenie dokumentu: {e}"));
+    let doc = tekst_czesci(czesci, "word/document.xml").unwrap_or_default();
+    let d = docx_xml::parsuj(&doc).map_err(blad)?;
+    let body = d
+        .wszystkie("w:body")
+        .first()
+        .copied()
+        .ok_or_else(|| blad("brak w:body".into()))?;
+    let mut e = vec![docx_xml::Edycja {
+        od: d.w(body).otw_do,
+        do_: d.w(body).otw_do,
+        nowe: n.tresc.iter().map(|t| akapit_informacyjny(t, 26)).collect(),
+    }];
+    let naglowki: Vec<String> = czesci
+        .iter()
+        .map(|(x, _)| x.clone())
+        .filter(|x| x.starts_with("word/header") && x.ends_with(".xml"))
+        .collect();
+    let mut nowy_naglowek = false;
+    for s in d.wszystkie("w:sectPr") {
+        if d.dziecko(s, "w:headerReference").is_none() {
+            nowy_naglowek = true;
+            e.push(docx_xml::Edycja {
+                od: d.w(s).otw_do,
+                do_: d.w(s).otw_do,
+                nowe: format!("<w:headerReference w:type=\"default\" r:id=\"{ID_NAGLOWKA}\"/>"),
+            });
+        }
+    }
+    if nowy_naglowek {
+        let korzen = d
+            .dzieci_el(0)
+            .next()
+            .ok_or_else(|| blad("brak elementu głównego".into()))?;
+        let tag = &doc[d.w(korzen).od..d.w(korzen).otw_do];
+        if !tag.contains("xmlns:r=") {
+            e.push(docx_xml::Edycja {
+                od: d.w(korzen).otw_do - 1,
+                do_: d.w(korzen).otw_do - 1,
+                nowe: " xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"".into(),
+            });
+        }
+    }
+    let doc2 = docx_xml::zastosuj(&doc, e).map_err(blad)?;
+    ustaw_czesc(czesci, "word/document.xml", doc2);
+    for h in naglowki {
+        let t = tekst_czesci(czesci, &h).unwrap_or_default();
+        let dh = docx_xml::parsuj(&t).map_err(blad)?;
+        let korzen = dh.dzieci_el(0).next();
+        if let Some(k) = korzen {
+            let t2 = docx_xml::zastosuj(
+                &t,
+                vec![docx_xml::Edycja {
+                    od: dh.w(k).otw_do,
+                    do_: dh.w(k).otw_do,
+                    nowe: akapit_informacyjny(&n.naglowek, 18),
+                }],
+            )
+            .map_err(blad)?;
+            ustaw_czesc(czesci, &h, t2);
+        }
+    }
+    if nowy_naglowek {
+        czesci.push((
+            "word/header_robinwood.xml".into(),
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:hdr xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">{}</w:hdr>",
+                akapit_informacyjny(&n.naglowek, 18)
+            )
+            .into_bytes(),
+        ));
+        let rels = "word/_rels/document.xml.rels";
+        let wpis = format!("<Relationship Id=\"{ID_NAGLOWKA}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/header\" Target=\"header_robinwood.xml\"/>");
+        match tekst_czesci(czesci, rels) {
+            Some(t) => {
+                let k = t.rfind("</Relationships>").ok_or_else(|| blad("relacje".into()))?;
+                ustaw_czesc(czesci, rels, format!("{}{wpis}{}", &t[..k], &t[k..]));
+            }
+            None => czesci.push((
+                rels.into(),
+                format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">{wpis}</Relationships>").into_bytes(),
+            )),
+        }
+        let typy = tekst_czesci(czesci, "[Content_Types].xml").unwrap_or_default();
+        if let Some(k) = typy.rfind("</Types>") {
+            let wpis = "<Override PartName=\"/word/header_robinwood.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml\"/>";
+            ustaw_czesc(
+                czesci,
+                "[Content_Types].xml",
+                format!("{}{wpis}{}", &typy[..k], &typy[k..]),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Oznaczenie dokumentu: wiersz nagłówka strony i akapity na początku treści.
+#[derive(Debug, Clone, Default)]
+pub struct Naglowek {
+    pub naglowek: String,
+    pub tresc: Vec<String>,
+}
+
+/// Opcje wypełniania.
+#[derive(Debug, Clone, Default)]
+pub struct Opcje {
+    /// Wycięcie samego bloku warunkowego (np. „załącznik 5”).
+    pub tylko: Option<String>,
+    /// Tryb ścisły (generowanie): błąd szablonu = odmowa. Wyłączony – analiza (raport).
+    pub scisly: bool,
+    /// Analiza szablonu: dodatkowe ostrzeżenia i kontrole bezpieczeństwa wszystkich bloków.
+    pub analiza: bool,
+    /// Pola wymagane w szablonie (brak → `brak_wymaganych`).
+    pub wymagane: Vec<String>,
+    /// Oznaczenie dokumentu (projekt / tekst jednolity).
+    pub naglowek: Option<Naglowek>,
+}
+
+/// Wypełnia szablon w trybie ścisłym (wynik przechodzi walidator struktury).
+/// `tylko` – wycięcie samego bloku warunkowego (np. „załącznik 5”).
+pub fn wypelnij(
+    szablon: &[u8],
+    dane: &DaneSzablonu,
+    tylko: Option<&str>,
+) -> Wynik<(Vec<u8>, RaportSzablonu)> {
+    wypelnij_z(
+        szablon,
+        dane,
+        &Opcje {
+            tylko: tylko.map(String::from),
+            scisly: true,
+            ..Default::default()
+        },
+    )
+}
+
+pub fn wypelnij_z(
+    szablon: &[u8],
+    dane: &DaneSzablonu,
+    o: &Opcje,
+) -> Wynik<(Vec<u8>, RaportSzablonu)> {
+    let mut czesci = rozpakuj(szablon)?;
+    let mut r = RaportSzablonu::default();
+    // każda część XML musi być poprawna – zepsuty szablon jest odrzucany
+    for (n, b) in &czesci {
+        if n.ends_with(".xml") || n.ends_with(".rels") {
+            let t = std::str::from_utf8(b)
+                .map_err(|_| blad_pliku(format!("{n}: nieprawidłowe kodowanie")))?;
+            docx_xml::parsuj(t).map_err(|e| blad_pliku(format!("{n}: niepoprawny XML – {e}")))?;
+        }
+    }
+    oczysc_pakiet(&mut czesci, &mut r)?;
+    for (n, b) in czesci.iter_mut() {
+        if !czesc_z_polami(n) {
+            continue;
+        }
+        let tekst = String::from_utf8(std::mem::take(b))
+            .map_err(|_| blad_pliku(format!("{n}: nieprawidłowe kodowanie")))?;
+        let glowna = n == "word/document.xml";
+        let mut x = kontrolki_tresci(&tekst, dane, &mut r, glowna, o)?;
+        x = scal_pola(&x);
+        if glowna {
+            if let Some(blok) = &o.tylko {
+                x = tylko_blok(&x, blok)?;
+            }
+        }
+        x = bloki_warunkowe(x, dane, &mut r, o)?;
+        x = wstaw_bloki(x, dane, &mut r, glowna);
+        x = zamien_pola(&x, dane, &mut r);
+        *b = x.into_bytes();
+    }
+    for w in &o.wymagane {
+        let k = normalizuj(w);
+        if !r.pola.iter().any(|p| dane.klucz(p) == k) {
+            dodaj_raz(&mut r.brak_wymaganych, w);
+        }
+    }
+    if let Some(n) = &o.naglowek {
+        oznacz_dokument(&mut czesci, n)?;
+    }
+    if let Err(e) = sprawdz_pakiet(&czesci) {
+        let m = format!(
+            "wygenerowany dokument miałby niepoprawną strukturę ({e}) – dokumentu nie utworzono; popraw szablon w tym miejscu albo zgłoś problem"
+        );
+        if o.scisly {
+            return Err(BladApi::NieprawidloweDane(m));
+        }
+        dodaj_raz(&mut r.bledy, &m);
+    }
+    Ok((spakuj(&czesci)?, r))
+}
+
+/// Analiza szablonu bez danych (raport po wgraniu pliku): znalezione pola i bloki, pola
+/// nieznane, `[uzupełnij]`, pola wymagane nieobecne, znaczniki dzielące akapit z tekstem,
+/// błędy bloków (niezamknięte, w złej kolejności, przecinające tabelę), kontrolki w tabelach.
+/// Niepoprawny XML → błąd (szablon odrzucony).
+pub fn analizuj(szablon: &[u8], znane: &DaneSzablonu, wymagane: &[&str]) -> Wynik<RaportSzablonu> {
+    let mut d = znane.clone();
+    for w in d.warunki.values_mut() {
+        *w = true;
+    }
+    let (_, mut r) = wypelnij_z(
+        szablon,
+        &d,
+        &Opcje {
+            analiza: true,
+            wymagane: wymagane.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        },
+    )?;
+    r.puste.clear();
+    Ok(r)
 }
 
 pub fn spakuj(czesci: &[(String, Vec<u8>)]) -> Wynik<Vec<u8>> {
@@ -1147,52 +1762,6 @@ fn bez_makr(czesci: &mut Vec<(String, Vec<u8>)>) -> bool {
         }
     }
     zmieniono
-}
-
-/// Wypełnia szablon. `tylko` – wycięcie samego bloku warunkowego (np. „załącznik 5”).
-pub fn wypelnij(
-    szablon: &[u8],
-    dane: &DaneSzablonu,
-    tylko: Option<&str>,
-) -> Wynik<(Vec<u8>, RaportSzablonu)> {
-    let mut czesci = rozpakuj(szablon)?;
-    let mut r = RaportSzablonu::default();
-    if bez_makr(&mut czesci) {
-        r.ostrzezenia
-            .push("szablon zawierał makra (.docm) – w dokumencie zostały usunięte".into());
-    }
-    for (n, b) in czesci.iter_mut() {
-        if !czesc_z_polami(n) {
-            continue;
-        }
-        let tekst = String::from_utf8(std::mem::take(b))
-            .map_err(|_| blad_pliku(format!("{n}: nieprawidłowe kodowanie")))?;
-        let glowna = n == "word/document.xml";
-        let mut x = kontrolki_tresci(&tekst, dane, &mut r, glowna);
-        x = scal_pola(&x);
-        if glowna {
-            if let Some(blok) = tylko {
-                x = tylko_blok(&x, blok)?;
-            }
-        }
-        x = bloki_warunkowe(x, dane, &mut r);
-        x = wstaw_bloki(x, dane, &mut r, glowna);
-        x = zamien_pola(&x, dane, &mut r);
-        *b = x.into_bytes();
-    }
-    Ok((spakuj(&czesci)?, r))
-}
-
-/// Analiza szablonu bez danych: znalezione pola i bloki (do raportu po wgraniu pliku).
-/// `znane` – dane z kompletem kluczy (wartości bez znaczenia) do rozpoznania nieznanych pól.
-pub fn analizuj(szablon: &[u8], znane: &DaneSzablonu) -> Wynik<RaportSzablonu> {
-    let mut d = znane.clone();
-    for w in d.warunki.values_mut() {
-        *w = true;
-    }
-    let (_, mut r) = wypelnij(szablon, &d, None)?;
-    r.puste.clear();
-    Ok(r)
 }
 
 #[cfg(test)]
@@ -1302,7 +1871,7 @@ mod testy {
                     <w:p><w:r><w:t>Zgoda na zdjęcia</w:t></w:r></w:p>\
                     <w:p><w:r><w:t>[[/załącznik 6]]</w:t></w:r></w:p>\
                     <w:p><w:pPr><w:jc w:val=\"left\"/></w:pPr><w:r><w:t>[specyfikacja]</w:t></w:r></w:p>\
-                    <w:p><w:r><w:t>[[nieznany]]x[[/nieznany]] [[bez końca]]</w:t></w:r></w:p>";
+                    <w:p><w:r><w:t>[[nieznany]]x[[/nieznany]]</w:t></w:r></w:p>";
         let (wynik, r) = wypelnij(&dokument(body), &dane(), None).unwrap();
         let doc = czesc(&wynik, "word/document.xml");
         let t = tekst(&doc);
@@ -1314,7 +1883,6 @@ mod testy {
         assert!(doc.contains("&#91;x&#93;"));
         assert!(r.nieznane.is_empty(), "{:?}", r.nieznane);
         assert!(r.ostrzezenia.iter().any(|o| o.contains("nieznany")));
-        assert!(r.ostrzezenia.iter().any(|o| o.contains("bez końca")));
         assert!(zrownowazony(&doc));
         // makra usunięte
         let typy = czesc(&wynik, "[Content_Types].xml");
@@ -1404,8 +1972,279 @@ mod testy {
     #[test]
     fn analiza_i_bledny_plik() {
         let body = "<w:p><w:r><w:t>[numer umowy] [coś innego]</w:t></w:r></w:p>";
-        let r = analizuj(&dokument(body), &dane()).unwrap();
+        let r = analizuj(&dokument(body), &dane(), &[]).unwrap();
         assert_eq!(r.nieznane, vec!["coś innego".to_string()]);
         assert!(wypelnij(b"to nie jest zip", &dane(), None).is_err());
+    }
+
+    fn dokument_z(body: &str, czesci_dod: Vec<(String, Vec<u8>)>, rels: &str) -> Vec<u8> {
+        let doc = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body>{body}<w:sectPr/></w:body></w:document>"
+        );
+        let mut c = vec![
+            (
+                "[Content_Types].xml".to_string(),
+                b"<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/><Override PartName=\"/word/activeX/activeX1.xml\" ContentType=\"application/vnd.ms-office.activeX+xml\"/></Types>".to_vec(),
+            ),
+            ("word/document.xml".to_string(), doc.into_bytes()),
+            (
+                "word/_rels/document.xml.rels".to_string(),
+                format!("<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">{rels}</Relationships>").into_bytes(),
+            ),
+        ];
+        c.extend(czesci_dod);
+        spakuj(&c).unwrap()
+    }
+
+    fn akapity(xml: &str) -> Vec<String> {
+        let d = docx_xml::parsuj(xml).unwrap();
+        d.wszystkie("w:p")
+            .into_iter()
+            .map(|p| docx_xml::tekst_elementu(&d, xml, p))
+            .collect()
+    }
+
+    #[test]
+    fn znaczniki_blokow_dzielace_akapit_nie_usuwaja_sasiednich_paragrafow() {
+        // Shift+Enter: znacznik w tym samym akapicie co § 4 i § 6
+        let body = "<w:p><w:r><w:t>§ 4. Płatność zadatku.</w:t><w:br/><w:t>[[załącznik 3]]</w:t></w:r></w:p>\
+                    <w:p><w:r><w:t>Cennik AGD</w:t></w:r></w:p>\
+                    <w:p><w:r><w:t>[[/załącznik 3]]</w:t><w:br/><w:t>§ 6. Odbiór.</w:t></w:r></w:p>\
+                    <w:p><w:r><w:t>§ 7. Wariant: [[wariant B]]po odbiorze[[/wariant B]] koniec.</w:t></w:r></w:p>";
+        let mut d = dane();
+        d.warunek("wariant B", false);
+        let (wynik, _) = wypelnij(&dokument(body), &d, None).unwrap();
+        let doc = czesc(&wynik, "word/document.xml");
+        let a = akapity(&doc);
+        assert_eq!(
+            a,
+            vec![
+                "§ 4. Płatność zadatku.",
+                "§ 6. Odbiór.",
+                "§ 7. Wariant:  koniec."
+            ],
+            "{doc}"
+        );
+        assert!(
+            !doc.contains("<w:br/>"),
+            "podziały wiersza przy znacznikach usunięte: {doc}"
+        );
+        // warunek prawdziwy – zostaje treść, znikają znaczniki i ich linie
+        d.warunek("załącznik 3", true);
+        let (wynik, _) = wypelnij(&dokument(body), &d, None).unwrap();
+        let a = akapity(&czesc(&wynik, "word/document.xml"));
+        assert_eq!(
+            a,
+            vec![
+                "§ 4. Płatność zadatku.",
+                "Cennik AGD",
+                "§ 6. Odbiór.",
+                "§ 7. Wariant:  koniec."
+            ]
+        );
+        // raport przy wgraniu ostrzega
+        let r = analizuj(&dokument(body), &dane(), &[]).unwrap();
+        assert!(
+            r.ostrzezenia.iter().any(|o| o.contains("dzieli akapit")),
+            "{:?}",
+            r.ostrzezenia
+        );
+        assert!(r.bledy.is_empty(), "{:?}", r.bledy);
+    }
+
+    #[test]
+    fn bledy_struktury_blokow_odmowa_i_raport() {
+        let przypadki = [
+            ("<w:p><w:r><w:t>[[załącznik 3]]</w:t></w:r></w:p><w:p><w:r><w:t>x</w:t></w:r></w:p>", "nie ma znacznika końca"),
+            ("<w:p><w:r><w:t>[[/załącznik 3]]</w:t></w:r></w:p>", "bez znacznika początku"),
+            ("<w:p><w:r><w:t>[[załącznik 3]]</w:t></w:r></w:p><w:p><w:r><w:t>[[załącznik 6]]</w:t></w:r></w:p><w:p><w:r><w:t>[[/załącznik 3]]</w:t></w:r></w:p><w:p><w:r><w:t>[[/załącznik 6]]</w:t></w:r></w:p>", "zachodzą"),
+            ("<w:p><w:r><w:t>[[załącznik 3]]</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>[[/załącznik 3]]</w:t></w:r></w:p></w:tc></w:tr></w:tbl>", "w tabeli"),
+            ("<w:tbl><w:tr><w:tc><w:p><w:r><w:t>[[załącznik 3]]</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>[[/załącznik 3]]</w:t></w:r></w:p></w:tc></w:tr></w:tbl>", "komórkach"),
+        ];
+        for (body, fraza) in przypadki {
+            let e = wypelnij(&dokument(body), &dane(), None)
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains(fraza), "{fraza}: {e}");
+            let r = analizuj(&dokument(body), &dane(), &[]).unwrap();
+            assert!(
+                r.bledy.iter().any(|b| b.contains(fraza)),
+                "{fraza}: {:?}",
+                r.bledy
+            );
+        }
+    }
+
+    #[test]
+    fn raport_pol_wymaganych_i_uzupelnij() {
+        let body = "<w:p><w:r><w:t>[numer umowy] [uzupełnij] [uzupelnij] [coś]</w:t></w:r></w:p>";
+        let mut d = dane();
+        d.pomin("uzupełnij");
+        let r = analizuj(&dokument(body), &d, &["numer umowy", "specyfikacja"]).unwrap();
+        assert_eq!(r.brak_wymaganych, vec!["specyfikacja".to_string()]);
+        assert_eq!(r.do_uzupelnienia, 2);
+        assert_eq!(r.nieznane, vec!["coś".to_string()]);
+    }
+
+    #[test]
+    fn zepsuty_xml_odrzucony() {
+        let body = "<w:p><w:r><w:t>niezamknięty</w:r></w:p>";
+        let e = analizuj(&dokument(body), &dane(), &[])
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("niepoprawny XML"), "{e}");
+    }
+
+    #[test]
+    fn kontrolki_w_tabeli_komorce_i_wierszu() {
+        let mut d = dane();
+        d.pole("numer umowy", "7/2027");
+        // blokowa kontrolka z tabelą (pole blokowe) jako ostatnia w komórce → akapit na końcu
+        let body = "<w:tbl><w:tr><w:tc><w:sdt><w:sdtPr><w:tag w:val=\"specyfikacja\"/></w:sdtPr><w:sdtContent><w:p><w:r><w:t>x</w:t></w:r></w:p></w:sdtContent></w:sdt></w:tc></w:tr></w:tbl>";
+        d.blok(
+            "specyfikacja",
+            xml::tabela(&[1000], &[(true, vec![xml::Komorka::t("a")])]),
+        );
+        let (w, _) = wypelnij(&dokument(body), &d, None).unwrap();
+        let doc = czesc(&w, "word/document.xml");
+        assert!(doc.contains("</w:tbl><w:p/></w:tc>"), "{doc}");
+        // blokowa kontrolka tekstowa w komórce
+        let body = "<w:tbl><w:tr><w:tc><w:sdt><w:sdtPr><w:alias w:val=\"numer umowy\"/></w:sdtPr><w:sdtContent><w:p><w:r><w:t>x</w:t></w:r></w:p></w:sdtContent></w:sdt></w:tc></w:tr></w:tbl>";
+        let (w, _) = wypelnij(&dokument(body), &d, None).unwrap();
+        assert!(czesc(&w, "word/document.xml").contains(
+            "<w:tc><w:p><w:r><w:t xml:space=\"preserve\">7/2027</w:t></w:r></w:p></w:tc>"
+        ));
+        // kontrolka obejmująca komórkę i wiersz → odmowa z komunikatem
+        for body in [
+            "<w:tbl><w:tr><w:sdt><w:sdtPr><w:alias w:val=\"numer umowy\"/></w:sdtPr><w:sdtContent><w:tc><w:p><w:r><w:t>x</w:t></w:r></w:p></w:tc></w:sdtContent></w:sdt></w:tr></w:tbl>",
+            "<w:tbl><w:sdt><w:sdtPr><w:alias w:val=\"numer umowy\"/></w:sdtPr><w:sdtContent><w:tr><w:tc><w:p><w:r><w:t>x</w:t></w:r></w:p></w:tc></w:tr></w:sdtContent></w:sdt></w:tbl>",
+        ] {
+            let e = wypelnij(&dokument(body), &d, None).unwrap_err().to_string();
+            assert!(e.contains("tabeli – wartości nie można"), "{e}");
+            let r = analizuj(&dokument(body), &d, &[]).unwrap();
+            assert_eq!(r.bledy.len(), 1, "{:?}", r.bledy);
+        }
+        // nieznana kontrolka wierszowa zostaje (poprawny OOXML)
+        let body = "<w:tbl><w:sdt><w:sdtPr><w:tag w:val=\"inne\"/></w:sdtPr><w:sdtContent><w:tr><w:tc><w:p/></w:tc></w:tr></w:sdtContent></w:sdt></w:tbl>";
+        assert!(wypelnij(&dokument(body), &d, None).is_ok());
+    }
+
+    #[test]
+    fn znaki_niedozwolone_w_xml_odfiltrowane() {
+        let mut d = dane();
+        d.pole("klient", "Jan\u{FFFE}\u{FFFF}\u{1}\u{8} Kowalski\r");
+        let body = "<w:p><w:r><w:t>[klient]</w:t></w:r></w:p>";
+        let (w, _) = wypelnij(&dokument(body), &d, None).unwrap();
+        let doc = czesc(&w, "word/document.xml");
+        assert!(doc.contains(">Jan Kowalski<"), "{doc}");
+        assert!(docx_xml::parsuj(&doc).is_ok());
+        assert_eq!(xml::escape("a\u{FFFE}b\u{0}c"), "abc");
+    }
+
+    #[test]
+    fn archiwum_z_zafalszowanym_rozmiarem_odrzucone() {
+        // 300 MB zer w jednym wpisie (kompresja ~1000:1) – rozmiar liczony z odczytanych bajtów
+        let mut z = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let o = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .large_file(true);
+        z.start_file("word/document.xml", o).unwrap();
+        let mb = vec![0u8; 1024 * 1024];
+        for _ in 0..300 {
+            z.write_all(&mb).unwrap();
+        }
+        let mut b = z.finish().unwrap().into_inner();
+        assert!(b.len() < 2 * 1024 * 1024, "{}", b.len());
+        // fałszujemy zadeklarowany rozmiar (nagłówek lokalny i katalog centralny) na 1 KB
+        let falsz = |b: &mut Vec<u8>, sygn: &[u8], przes: usize| {
+            let mut i = 0;
+            while i + 4 <= b.len() {
+                if &b[i..i + 4] == sygn {
+                    b[i + przes..i + przes + 4].copy_from_slice(&1024u32.to_le_bytes());
+                }
+                i += 1;
+            }
+        };
+        falsz(&mut b, b"PK\x03\x04", 22);
+        falsz(&mut b, b"PK\x01\x02", 24);
+        let e = rozpakuj(&b);
+        assert!(e.is_err(), "zafałszowany rozmiar nie może obejść limitu");
+        // ścieżki z .. i bezwzględne
+        for n in ["../x.xml", "/etc/x", "word\\..\\x", "C:/x"] {
+            let c = vec![
+                ("word/document.xml".to_string(), b"<a/>".to_vec()),
+                (n.to_string(), b"x".to_vec()),
+            ];
+            assert!(rozpakuj(&spakuj(&c).unwrap()).is_err(), "{n}");
+        }
+    }
+
+    #[test]
+    fn activex_i_odwolania_zewnetrzne_usuwane() {
+        let body = "<w:p><w:r><w:t>Przycisk:</w:t></w:r><w:r><w:object w:dxaOrig=\"1\"><w:control r:id=\"rId9\" w:name=\"CommandButton1\"/></w:object></w:r></w:p>";
+        let rels = "<Relationship Id=\"rId9\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/control\" Target=\"activeX/activeX1.xml\"/>\
+                    <Relationship Id=\"rId3\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" Target=\"https://example.com\" TargetMode=\"External\"/>";
+        let dod = vec![
+            ("word/activeX/activeX1.xml".to_string(), b"<ax:ocx xmlns:ax=\"x\"/>".to_vec()),
+            ("word/activeX/activeX1.bin".to_string(), vec![1, 2, 3]),
+            ("word/activeX/_rels/activeX1.xml.rels".to_string(), b"<Relationships xmlns=\"x\"/>".to_vec()),
+            (
+                "word/_rels/settings.xml.rels".to_string(),
+                b"<Relationships xmlns=\"x\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate\" Target=\"file:///C:/Szablony/Umowa.dotm\" TargetMode=\"External\"/></Relationships>".to_vec(),
+            ),
+            (
+                "word/settings.xml".to_string(),
+                b"<w:settings xmlns:w=\"w\" xmlns:r=\"r\"><w:attachedTemplate r:id=\"rId1\"/></w:settings>".to_vec(),
+            ),
+        ];
+        let (w, r) = wypelnij(&dokument_z(body, dod, rels), &dane(), None).unwrap();
+        let c = rozpakuj(&w).unwrap();
+        assert!(
+            c.iter().all(|(n, _)| !n.contains("activeX")),
+            "części ActiveX usunięte"
+        );
+        let doc = czesc(&w, "word/document.xml");
+        assert!(
+            !doc.contains("w:control") && !doc.contains("w:object") && doc.contains("Przycisk:")
+        );
+        let rels = czesc(&w, "word/_rels/document.xml.rels");
+        assert!(!rels.contains("control") && rels.contains("example.com"));
+        assert!(!czesc(&w, "[Content_Types].xml").contains("activeX"));
+        assert!(!czesc(&w, "word/settings.xml").contains("attachedTemplate"));
+        assert!(!czesc(&w, "word/_rels/settings.xml.rels").contains("file:"));
+        assert!(r.ostrzezenia.iter().any(|o| o.contains("ActiveX")));
+        // połączony obraz z udziału sieciowego → odmowa
+        let rels = "<Relationship Id=\"rId5\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"file://serwer/udzial/logo.png\" TargetMode=\"External\"/>";
+        let e = wypelnij(&dokument_z("<w:p/>", vec![], rels), &dane(), None)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("pliku zewnętrznego"), "{e}");
+    }
+
+    #[test]
+    fn oznaczenie_projektu_w_tresci_i_naglowku() {
+        let o = Opcje {
+            scisly: true,
+            naglowek: Some(Naglowek {
+                naglowek: "PROJEKT – NIE DO PODPISU".into(),
+                tresc: vec!["PROJEKT – NIE DO PODPISU".into()],
+            }),
+            ..Default::default()
+        };
+        // dokument bez nagłówka → nowy nagłówek z relacją
+        let (w, _) = wypelnij_z(
+            &dokument_z("<w:p><w:r><w:t>A</w:t></w:r></w:p>", vec![], ""),
+            &dane(),
+            &o,
+        )
+        .unwrap();
+        let doc = czesc(&w, "word/document.xml");
+        assert!(doc.contains("<w:body><w:p><w:pPr><w:jc w:val=\"center\"/>"));
+        assert!(doc.contains("rIdRobinwoodNaglowek"));
+        assert!(czesc(&w, "word/header_robinwood.xml").contains("NIE DO PODPISU"));
+        sprawdz_pakiet(&rozpakuj(&w).unwrap()).unwrap();
+        // dokument z nagłówkiem – akapit dopisany w istniejącym
+        let (w, _) = wypelnij_z(&dokument("<w:p/>"), &dane(), &o).unwrap();
+        assert!(czesc(&w, "word/header1.xml").contains("NIE DO PODPISU"));
     }
 }
